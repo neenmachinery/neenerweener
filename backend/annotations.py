@@ -267,23 +267,51 @@ def _annotation_markup(number: int, row: Annotation, text: str, last: bool) -> s
 
 def _render_annotated_inline(token, ranges, numbers, rows, renderer, options, env) -> str:
     children = token.children or []
-    # markdown-it has already decoded entities in text tokens. Keep the cursor in
-    # the same canonical text model used by the resolver while preserving tags.
-    cursor = 0
+    # Use the resolver's segments to map source token text to canonical offsets.
+    _, segments = _inline_segments(children)
+    segment_index = 0
+    segment_used = 0
+    segment_active = False
     pieces = []
     for child in children:
         if child.type not in {"text", "softbreak", "hardbreak"}:
             pieces.append(child)
-            if child.type not in _FORMATTING and cursor:
-                cursor += 1
+            if child.type not in _FORMATTING:
+                if segment_active:
+                    segment_index += 1
+                segment_used = 0
+                segment_active = False
             continue
-        content = " " if child.type != "text" and child.type != "hardbreak" else ("<br>" if child.type == "hardbreak" else child.content)
         if child.type != "text":
+            if segment_index < len(segments):
+                segment, segment_start = segments[segment_index]
+                left = segment_start + segment_used
+                right = left + 1
+                active = [(idx, a, b) for idx, a, b in ranges if a <= left and right <= b]
+                if active:
+                    idx, _, annotation_end = active[-1]
+                    content = " " if child.type == "softbreak" else " <br>"
+                    child.type = "html_inline"
+                    child.content = _annotation_markup(numbers[idx], rows[idx], content, right >= annotation_end)
             pieces.append(child)
-            cursor += 1
+            segment_used += 1
             continue
-        start = cursor
-        end = start + len(content)
+        normalized = re.sub(r"\s+", " ", child.content).strip()
+        if not normalized:
+            pieces.append(child)
+            continue
+        segment, segment_start = segments[segment_index]
+        found = segment.find(normalized, segment_used)
+        if found < 0:
+            # The resolver and renderer must share a cursor model. This is only
+            # reachable if markdown-it changes its inline tokenization.
+            pieces.append(child)
+            continue
+        leading = len(child.content) - len(child.content.lstrip())
+        start = segment_start + found - leading
+        end = start + len(child.content)
+        segment_used = found + len(normalized)
+        segment_active = True
         cuts = {start, end}
         for _, left, right in ranges:
             if left < end and right > start:
@@ -291,18 +319,16 @@ def _render_annotated_inline(token, ranges, numbers, rows, renderer, options, en
         points = sorted(cuts)
         rendered = []
         for left, right in zip(points, points[1:]):
-            chunk = content[left - start:right - start]
+            chunk = child.content[left - start:right - start]
             active = [(idx, a, b) for idx, a, b in ranges if a <= left and right <= b]
             if not active:
                 rendered.append(html.escape(chunk, quote=False))
                 continue
             idx, _, annotation_end = active[-1]
-            number = numbers[idx]
-            rendered.append(_annotation_markup(number, rows[idx], chunk, right >= annotation_end))
+            rendered.append(_annotation_markup(numbers[idx], rows[idx], chunk, right >= annotation_end))
         child.type = "html_inline"
         child.content = "".join(rendered)
         pieces.append(child)
-        cursor = end
     return renderer.renderInline(pieces, options, env)
 
 

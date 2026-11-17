@@ -172,6 +172,40 @@ def test_resolved_note_is_rendered_for_readers():
     assert "a note" in result.html
 
 
+def test_annotation_after_leading_code_marks_exact_selector():
+    result = render_with_annotations("`neenerweener` dumb spam account name", [row(1, "dumb spam account name")])
+    assert result.resolutions[0].status == "resolved"
+    assert '<mark>dumb spam account name</mark>' in result.html
+    assert result.html.index('<sup>') > result.html.index('name</mark>')
+
+
+@pytest.mark.parametrize("body", [
+    "`code` tail",
+    "head `code` tail",
+    "head `code`",
+    "*emphasis* tail",
+    "head [linked text](https://example.test) tail",
+    "one &amp; two tail",
+    "one\ntwo tail",
+    "one ![image](x) tail",
+    "one $x$ tail",
+])
+def test_rendered_mark_fragments_match_every_canonical_segment(body):
+    import html as html_module
+    import re
+
+    _, blocks = _blocks(body)
+    assert len(blocks) == 1
+    for segment, _ in blocks[0].segments:
+        selections = {segment[left:right] for left in range(len(segment)) for right in range(left + 1, len(segment) + 1)}
+        for exact in selections:
+            result = render_with_annotations(body, [row(1, exact)])
+            if result.resolutions[0].status != "resolved":
+                continue
+            marked = "".join(html_module.unescape(value) for value in re.findall(r"<mark>(.*?)</mark>", result.html))
+            assert marked == exact
+
+
 @pytest.fixture
 def annotation_db():
     url = os.environ.get("DATABASE_URL")
