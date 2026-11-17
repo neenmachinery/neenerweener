@@ -199,24 +199,25 @@ def _block_kind(parent: str, stack: list[str]) -> str | None:
     return None
 
 
+def _block_from_token(token, parent, stack, index):
+    if token.type != "inline" or not token.children or _contains_raw_html(token.children):
+        return None
+    kind = _block_kind(parent, stack)
+    if kind is None:
+        return None
+    text, segments, positions = _inline_map(token.children)
+    return _Block(kind, index, text, segments, positions) if text else None
+
+
 def _blocks(body: str, *, heading_anchors: bool = False, parser: MarkdownIt | None = None):
     tokens = (parser or _markdown()).parse(body, {"heading_anchors": True} if heading_anchors else {})
-    blocks: list[_Block] = []
-    stack: list[str] = []
-    index = 0
+    blocks, stack, index = [], [], 0
     for pos, token in enumerate(tokens):
         if _stack_change(token.type, stack):
             continue
-        if token.type != "inline" or not token.children:
-            continue
-        kind = _block_kind(tokens[pos - 1].type if pos else "", stack)
-        if kind is None:
-            continue
-        if _contains_raw_html(token.children):
-            continue
-        text, segments, positions = _inline_map(token.children)
-        if text:
-            blocks.append(_Block(kind, index, text, segments, positions))
+        block = _block_from_token(token, tokens[pos - 1].type if pos else "", stack, index)
+        if block is not None:
+            blocks.append(block)
             index += 1
     return tokens, blocks
 
