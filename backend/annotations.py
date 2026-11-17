@@ -274,7 +274,8 @@ def _annotation_suffix(number: int, row: Annotation) -> str:
     label = f"note {number}"
     sidenote = "" if len(row.note_text) > 400 else (
         f'<span class="sidenote" id="note-{number}" role="note">'
-        f'<span class="n" aria-hidden="true">{number}</span> {_note_html(row.note_text)}</span>'
+        f'<span class="n" aria-hidden="true">{number}</span>'
+        f'<span class="sidenote-text">{_note_html(row.note_text)}</span></span>'
     )
     marker = (
         f'<sup class="ann-ref-wide"><a href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>'
@@ -292,81 +293,76 @@ def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, e
     return f'<span class="ann" id="ann-{number}">{mark}{_annotation_suffix(number, row)}</span>'
 
 
-def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, options, env) -> str:
-    children = token.children or []
-    by_source: dict[tuple[int, int], list[int]] = {}
+def _token(type_: str, content: str):
+    return type("InlineToken", (), {"type": type_, "content": content})()
+
+
+def _active_at(canonical: int | None, ranges) -> int | None:
+    return next((idx for idx, left, right in ranges if canonical is not None and left <= canonical < right), None)
+
+
+def _fragment_markup(text, active, end, current_max, link_depth, numbers, rows, deferred):
+    if active is None:
+        return html.escape(text, quote=False)
+    last = end - 1 <= current_max
+    defer = last and link_depth > 0
+    if defer:
+        deferred.append((active, _annotation_suffix(numbers[active], rows[active])))
+    return _annotation_markup(numbers[active], rows[active], text, last, escaped=True, defer_suffix=defer)
+
+
+def _text_fragments(child, by_source, ranges, numbers, rows, link_depth, deferred):
+    fragments, current, active, current_max = [], [], None, -1
+    for raw, source in enumerate([by_source.get((id(child), i), []) for i in range(len(child.content))]):
+        canonical = source[0] if source else None
+        next_active = _active_at(canonical, ranges)
+        if next_active != active and current:
+            end = max((right for idx, _, right in ranges if idx == active), default=0)
+            fragments.append(_fragment_markup(''.join(current), active, end, current_max, link_depth, numbers, rows, deferred))
+            current, current_max = [], -1
+        active = next_active
+        if canonical is not None and active is not None:
+            current_max = max(current_max, canonical)
+        current.append(html.escape(child.content[raw], quote=False))
+    if current:
+        end = max((right for idx, _, right in ranges if idx == active), default=0)
+        fragments.append(_fragment_markup(''.join(current), active, end, current_max, link_depth, numbers, rows, deferred))
+    return _token("html_inline", ''.join(fragments))
+
+
+def _inline_plan(token, block, ranges, numbers, rows):
+    by_source = {}
     for canonical, source in enumerate(block.positions):
         if source is not None:
             by_source.setdefault((id(source[0]), source[1]), []).append(canonical)
-
-    pieces = []
-    link_depth = 0
-    deferred_suffixes: list[tuple[int, str]] = []
-    for child in children:
+    pieces, deferred, link_depth = [], [], 0
+    for child in token.children or []:
         if child.type == "link_open":
             link_depth += 1
         elif child.type == "link_close":
             link_depth -= 1
             pieces.append(child)
-            for annotation_index, suffix in deferred_suffixes:
-                link_start = next(i for i in range(len(pieces) - 1, -1, -1) if getattr(pieces[i], "type", None) == "link_open")
-                number = numbers[annotation_index]
-                pieces.insert(link_start, type("InlineToken", (), {"type": "html_inline", "content": f'<span class="ann" id="ann-{number}">'})())
-                pieces.append(type("InlineToken", (), {"type": "html_inline", "content": suffix + "</span>"})())
-            deferred_suffixes.clear()
+            for index, suffix in deferred:
+                start = next(i for i in range(len(pieces) - 1, -1, -1) if getattr(pieces[i], "type", None) == "link_open")
+                pieces.insert(start, _token("html_inline", f'<span class="ann" id="ann-{numbers[index]}">'))
+                pieces.append(_token("html_inline", suffix + "</span>"))
+            deferred.clear()
             continue
-        if child.type in {"text", "softbreak", "hardbreak"}:
-            if child.type in {"softbreak", "hardbreak"}:
-                # Keep the break token. A marked canonical space keeps selector text exact.
-                canonical = by_source.get((id(child), -1), [])
-                active = next((idx for idx, left, right in ranges if canonical and left <= canonical[0] < right), None)
-                if active is not None:
-                    pieces.append(type("InlineToken", (), {"type": "html_inline", "content": _annotation_markup(numbers[active], rows[active], " ", False, escaped=True)})())
-                pieces.append(child)
-                continue
-            raw_positions = [by_source.get((id(child), i), []) for i in range(len(child.content))]
-            fragments: list[str] = []
-            current: list[str] = []
-            current_annotation = None
-            current_max = -1
-            for raw_index, canonical_positions in enumerate(raw_positions):
-                canonical = canonical_positions[0] if canonical_positions else None
-                active = next((idx for idx, left, right in ranges if canonical is not None and left <= canonical < right), None)
-                if active != current_annotation and current:
-                    content = ''.join(current)
-                    if current_annotation is None:
-                        fragments.append(content)
-                    else:
-                        end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
-                        is_last = end - 1 <= current_max
-                        defer = is_last and link_depth > 0
-                        fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
-                        if defer: deferred_suffixes.append((current_annotation, _annotation_suffix(numbers[current_annotation], rows[current_annotation])))
-                    current = []
-                    current_max = -1
-                current_annotation = active
-                if active is not None and canonical is not None:
-                    current_max = max(current_max, canonical)
-                if child.type == "text":
-                    current.append(html.escape(child.content[raw_index], quote=False))
-                else:
-                    # keep markdown-it's break element instead of escaping a synthetic <br>.
-                    current.append("<br>\n" if child.type == "hardbreak" else "\n")
-            if current:
-                content = ''.join(current)
-                if current_annotation is None:
-                    fragments.append(content)
-                else:
-                    end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
-                    is_last = end - 1 <= current_max
-                    defer = is_last and link_depth > 0
-                    fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
-                    if defer: deferred_suffixes.append((current_annotation, _annotation_suffix(numbers[current_annotation], rows[current_annotation])))
-            child.type = "html_inline"
-            child.content = ''.join(fragments)
-        pieces.append(child)
-    pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for _, suffix in deferred_suffixes)
-    return renderer.renderInline(pieces, options, env)
+        if child.type in {"softbreak", "hardbreak"}:
+            active = _active_at(next(iter(by_source.get((id(child), -1), [])), None), ranges)
+            if active is not None:
+                pieces.append(_token("html_inline", _annotation_markup(numbers[active], rows[active], " ", False, escaped=True)))
+            pieces.append(child)
+        elif child.type == "text":
+            pieces.append(_text_fragments(child, by_source, ranges, numbers, rows, link_depth, deferred))
+        else:
+            pieces.append(child)
+    pieces.extend(_token("html_inline", suffix) for _, suffix in deferred)
+    return pieces
+
+
+def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, options, env) -> str:
+    return renderer.renderInline(_inline_plan(token, block, ranges, numbers, rows), options, env)
 
 
 def render_with_annotations(body_markdown: str, rows: Sequence[Annotation], parser: MarkdownIt | None = None) -> RenderedPost:

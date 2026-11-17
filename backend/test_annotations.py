@@ -1,5 +1,6 @@
 import concurrent.futures
 import os
+import threading
 
 import html5lib
 
@@ -47,8 +48,19 @@ def test_annotated_rendering_is_thread_local():
     rows = [row(1, "bold")]
     parser = _markdown()
     original_rules = dict(parser.renderer.rules)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        outputs = list(pool.map(lambda _: render_with_annotations(body, rows, parser).html, range(200)))
+    barrier = threading.Barrier(2)
+    def overlapping_close(tokens, index, options, env):
+        barrier.wait(timeout=5)
+        # The request-local copy must leave the shared parser rule untouched.
+        assert parser.renderer.rules["paragraph_close"] is overlapping_close
+        return parser.renderer.renderToken(tokens, index, options, env)
+
+    parser.renderer.rules["paragraph_close"] = overlapping_close
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            outputs = list(pool.map(lambda _: render_with_annotations(body, rows, parser).html, range(2)))
+    finally:
+        parser.renderer.rules = original_rules
     assert parser.renderer.rules == original_rules
     assert len(set(outputs)) == 1
     assert all('aria-label="note 1"' in output for output in outputs)

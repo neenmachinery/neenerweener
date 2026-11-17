@@ -2033,10 +2033,12 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
   main:has(.sidenote) { max-width: 68.5rem; }
   main:has(.sidenote) article { padding-right: 16.5rem; display: flow-root; }
   .sidenote { display: block; float: right; clear: right; width: 14rem; margin: 0 -16.5rem .8rem 0; padding-top: .15rem; font-size: .8667rem; line-height: 1.5; color: var(--muted); }
-  .sidenote .n { color: var(--faint); float: left; margin-right: .4rem; }
+  .sidenote { display: grid; grid-template-columns: 1ch minmax(0, 1fr); column-gap: .4rem; }
+  .sidenote .n { color: var(--faint); }
+  .sidenote-text { min-width: 0; }
   .ann-note { display: none; }
   .ann-note.ann-note-long { display: block; }
-  main:has(.sidenote) .back { right: auto; left: -1.5rem; margin-right: 0; z-index: 1; }
+  main:has(.sidenote) .back { right: auto; left: -2rem; width: 1.5rem; margin-right: 0; text-align: center; z-index: 1; }
 }
 @media (max-width: 1039px) {
   .ann-ref-wide { display: none; }
