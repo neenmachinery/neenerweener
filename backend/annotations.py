@@ -127,6 +127,19 @@ def _contains_raw_html(children) -> bool:
     return any(child.type == "html_inline" for child in children)
 
 
+def _normalized_run(run):
+    out, whitespace = [], False
+    for char, child, raw in run:
+        if char.isspace():
+            if not whitespace: out.append((" ", child, raw))
+            whitespace = True
+        else:
+            out.append((char, child, raw)); whitespace = False
+    while out and out[0][0] == " ": out.pop(0)
+    while out and out[-1][0] == " ": out.pop()
+    return out
+
+
 def _inline_map(children) -> tuple[str, list[tuple[str, int]], list[tuple[object, int] | None]]:
     parts: list[str] = []
     segments: list[tuple[str, int]] = []
@@ -136,20 +149,7 @@ def _inline_map(children) -> tuple[str, list[tuple[str, int]], list[tuple[object
 
     def flush() -> None:
         nonlocal cursor
-        if not run:
-            return
-        out: list[tuple[str, object, int]] = []
-        whitespace = False
-        for char, child, raw in run:
-            if char.isspace():
-                if not whitespace:
-                    out.append((" ", child, raw))
-                whitespace = True
-            else:
-                out.append((char, child, raw))
-                whitespace = False
-        while out and out[0][0] == " ": out.pop(0)
-        while out and out[-1][0] == " ": out.pop()
+        out = _normalized_run(run)
         if not out:
             run.clear()
             return
