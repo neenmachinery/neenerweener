@@ -2009,8 +2009,23 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
   .forum-thread-page .forum-item .avatar.small { width: 24px; height: 24px; border-radius: 6px; font-size: .8rem; }
 }
 @media (max-width: 400px) {
-  main:has(> footer) {
-    overflow-x: clip;
+  article {
+    min-width: 0;
+  }
+
+  article :is(p, li, blockquote, figcaption, a) {
+    overflow-wrap: anywhere;
+  }
+
+  article :is(ul, ol) {
+    box-sizing: border-box;
+    max-width: 100%;
+  }
+
+  article :is(img, video, svg, iframe) {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .post-head > h1,
@@ -2020,6 +2035,21 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
 
   main > footer {
     gap: 1rem;
+  }
+}
+
+@media (max-width: 250px) {
+  .canvas-pill {
+    height: auto;
+    min-height: 47px;
+    padding: 4px;
+    align-content: center;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .canvas-pill-action {
+    padding-inline: 7px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
