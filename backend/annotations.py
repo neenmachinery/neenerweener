@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from timeline import CONNECT_TIMEOUT_SECONDS, POOL_TIMEOUT_SECONDS, STATEMENT_TIMEOUT_MS, database_engine
 from markdown_it import MarkdownIt
 from mdit_py_plugins.dollarmath import dollarmath_plugin
+from anchors import add_heading_anchors
 from sqlalchemy.engine import Engine
 
 MAX_EXACT = 2000
@@ -110,8 +111,9 @@ class _Block:
 
 
 def _markdown() -> MarkdownIt:
-    parser = MarkdownIt("commonmark") .enable(["table", "strikethrough"])
+    parser = MarkdownIt("commonmark").enable(["table", "strikethrough"])
     dollarmath_plugin(parser, allow_digits=False)
+    parser.core.ruler.after("inline", "heading_anchors", add_heading_anchors)
     return parser
 
 
@@ -174,8 +176,8 @@ def _block_kind(parent: str, stack: list[str]) -> str | None:
     return None
 
 
-def _blocks(body: str):
-    tokens = _markdown().parse(body)
+def _blocks(body: str, *, heading_anchors: bool = False):
+    tokens = _markdown().parse(body, {"heading_anchors": True} if heading_anchors else {})
     blocks: list[_Block] = []
     stack: list[str] = []
     index = 0
@@ -305,7 +307,7 @@ def _render_annotated_inline(token, ranges, numbers, rows, renderer, options, en
 
 
 def render_with_annotations(body_markdown: str, rows: Sequence[Annotation]) -> RenderedPost:
-    tokens, blocks = _blocks(body_markdown)
+    tokens, blocks = _blocks(body_markdown, heading_anchors=True)
     resolutions = resolve(body_markdown, rows)
     resolved = [(i, row, result) for i, (row, result) in enumerate(zip(rows, resolutions)) if result.status == "resolved"]
     by_block: dict[int, list[tuple[int, int, int]]] = {}
