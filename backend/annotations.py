@@ -118,6 +118,10 @@ def _markdown() -> MarkdownIt:
 _FORMATTING = {"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}
 
 
+def _contains_raw_html(children) -> bool:
+    return any(child.type == "html_inline" for child in children)
+
+
 def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
     parts: list[str] = []
     segments: list[tuple[str, int]] = []
@@ -183,7 +187,7 @@ def _blocks(body: str):
         kind = _block_kind(tokens[pos - 1].type if pos else "", stack)
         if kind is None:
             continue
-        if any(child.type == "html_inline" for child in token.children):
+        if _contains_raw_html(token.children):
             continue
         text, segments = _inline_segments(token.children)
         if text:
