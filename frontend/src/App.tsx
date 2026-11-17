@@ -568,6 +568,21 @@ function PostPage({ slug }: { slug: string }) {
   const body = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!data) return;
+    const updateAnnotationMarkers = () => {
+      const narrow = matchMedia("(max-width: 1039px)").matches;
+      body.current?.querySelectorAll<HTMLElement>(".ann-ref").forEach((marker) => {
+        if (narrow) {
+          marker.setAttribute("aria-hidden", "true");
+          marker.tabIndex = -1;
+        } else {
+          marker.removeAttribute("aria-hidden");
+          marker.removeAttribute("tabindex");
+        }
+      });
+    };
+    updateAnnotationMarkers();
+    const media = matchMedia("(max-width: 1039px)");
+    media.addEventListener("change", updateAnnotationMarkers);
     const diagrams = body.current?.querySelectorAll<HTMLElement>("pre.mermaid");
     if (diagrams?.length) {
       // Mermaid is large, so only posts with diagrams load it.
@@ -595,6 +610,7 @@ function PostPage({ slug }: { slug: string }) {
         },
       );
     }
+    return () => media.removeEventListener("change", updateAnnotationMarkers);
   }, [data]);
   const back = <Back href="/" />;
   if (error)

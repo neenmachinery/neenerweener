@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, Sequence
+import copy
 
 import sqlalchemy as sa
 from timeline import CONNECT_TIMEOUT_SECONDS, POOL_TIMEOUT_SECONDS, STATEMENT_TIMEOUT_MS, database_engine
@@ -17,7 +18,7 @@ MAX_EXACT = 2000
 MAX_CONTEXT = 64
 MAX_NOTE = 2000
 SLUG = re.compile(r"^[a-z0-9-]{1,100}$")
-BLOCK_KINDS = {"heading", "paragraph", "list_item", "blockquote_paragraph", "table_cell"}
+BLOCK_KINDS = {"heading", "paragraph", "list_item", "blockquote_paragraph"}
 
 metadata = sa.MetaData()
 post_annotations = sa.Table(
@@ -195,8 +196,6 @@ def _block_kind(parent: str, stack: list[str]) -> str | None:
         return "heading"
     if parent == "paragraph_open":
         return stack[-1] + "_paragraph" if stack and stack[-1] == "blockquote" else ("list_item" if stack and stack[-1] == "list_item" else "paragraph")
-    if parent in ("th_open", "td_open"):
-        return "table_cell"
     return None
 
 
@@ -226,17 +225,15 @@ def _candidates(blocks, selector):
     candidates = []
     for block in blocks:
         if block.kind != selector.block_kind: continue
-        for segment, offset in block.segments:
-            start = 0
-            while True:
-                at = segment.find(selector.exact, start)
-                if at < 0: break
-                canonical_at = offset + at
-                before = block.text[max(0, canonical_at-len(selector.prefix)):canonical_at]
-                after = block.text[canonical_at+len(selector.exact):canonical_at+len(selector.exact)+len(selector.suffix)]
-                score = (before == selector.prefix, after == selector.suffix, block.index == selector.block_index)
-                candidates.append((score, block, offset + at, offset + at + len(selector.exact)))
-                start = at + 1
+        start = 0
+        while True:
+            canonical_at = block.text.find(selector.exact, start)
+            if canonical_at < 0: break
+            before = block.text[max(0, canonical_at-len(selector.prefix)):canonical_at]
+            after = block.text[canonical_at+len(selector.exact):canonical_at+len(selector.exact)+len(selector.suffix)]
+            score = (before == selector.prefix, after == selector.suffix, block.index == selector.block_index)
+            candidates.append((score, block, canonical_at, canonical_at + len(selector.exact)))
+            start = canonical_at + 1
     return candidates
 
 
@@ -273,20 +270,21 @@ def _note_html(note: str) -> str:
     return html.escape(note, quote=True)
 
 
-def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, escaped: bool = False) -> str:
-    mark = f'<mark>{text if escaped else html.escape(text, quote=True)}</mark>'
-    if not last:
-        return mark
+def _annotation_suffix(number: int, row: Annotation) -> str:
     label = f"note {number}"
     sidenote = "" if len(row.note_text) > 400 else (
         f'<span class="sidenote" id="note-{number}" role="note">'
         f'<span class="n" aria-hidden="true">{number}</span> {_note_html(row.note_text)}</span>'
     )
-    return (
-        f'<span class="ann" id="ann-{number}">{mark}'
-        f'<sup><a class="ann-ref" href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>'
-        f'{sidenote}</span>'
-    )
+    return f'<sup><a class="ann-ref" href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>{sidenote}'
+
+
+def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, escaped: bool = False, defer_suffix: bool = False) -> str:
+    mark = f'<mark>{text if escaped else html.escape(text, quote=True)}</mark>'
+    if not last:
+        return mark
+    suffix = "" if defer_suffix else _annotation_suffix(number, row)
+    return f'<span class="ann" id="ann-{number}">{mark}{suffix}</span>'
 
 
 def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, options, env) -> str:
@@ -297,7 +295,17 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
             by_source.setdefault((id(source[0]), source[1]), []).append(canonical)
 
     pieces = []
+    link_depth = 0
+    deferred_suffixes: list[str] = []
     for child in children:
+        if child.type == "link_open":
+            link_depth += 1
+        elif child.type == "link_close":
+            link_depth -= 1
+            pieces.append(child)
+            pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for suffix in deferred_suffixes)
+            deferred_suffixes.clear()
+            continue
         if child.type in {"text", "softbreak", "hardbreak"}:
             if child.type in {"softbreak", "hardbreak"}:
                 # Keep the break token. A marked canonical space keeps selector text exact.
@@ -311,6 +319,7 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
             fragments: list[str] = []
             current: list[str] = []
             current_annotation = None
+            current_max = -1
             for raw_index, canonical_positions in enumerate(raw_positions):
                 canonical = canonical_positions[0] if canonical_positions else None
                 active = next((idx for idx, left, right in ranges if canonical is not None and left <= canonical < right), None)
@@ -320,10 +329,15 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
                         fragments.append(content)
                     else:
                         end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
-                        child_end = max(canonical_positions, default=-1) + 1
-                        fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, end <= child_end, escaped=True))
+                        is_last = end - 1 <= current_max
+                        defer = is_last and link_depth > 0
+                        fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
+                        if defer: deferred_suffixes.append(_annotation_suffix(numbers[current_annotation], rows[current_annotation]))
                     current = []
+                    current_max = -1
                 current_annotation = active
+                if active is not None and canonical is not None:
+                    current_max = max(current_max, canonical)
                 if child.type == "text":
                     current.append(html.escape(child.content[raw_index], quote=False))
                 else:
@@ -335,11 +349,14 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
                     fragments.append(content)
                 else:
                     end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
-                    child_end = max((p for positions in raw_positions for p in positions), default=-1) + 1
-                    fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, end <= child_end, escaped=True))
+                    is_last = end - 1 <= current_max
+                    defer = is_last and link_depth > 0
+                    fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
+                    if defer: deferred_suffixes.append(_annotation_suffix(numbers[current_annotation], rows[current_annotation]))
             child.type = "html_inline"
             child.content = ''.join(fragments)
         pieces.append(child)
+    pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for suffix in deferred_suffixes)
     return renderer.renderInline(pieces, options, env)
 
 
@@ -357,7 +374,8 @@ def render_with_annotations(body_markdown: str, rows: Sequence[Annotation], pars
         by_block.setdefault(result.block_index, []).append((i, result.start or 0, result.end or 0))
     numbers = {i: n for n, (i, _, _) in enumerate(resolved, 1)}
     row_by_index = {i: row for i, row, _ in resolved}
-    renderer = parser.renderer
+    renderer = copy.copy(parser.renderer)
+    renderer.rules = dict(parser.renderer.rules)
     options = parser.options
     block_for_inline = {id(token.children): block for token, block in zip(
         [token for token in tokens if token.type == "inline" and token.children and not _contains_raw_html(token.children) and _inline_segments(token.children)[0]], blocks)}

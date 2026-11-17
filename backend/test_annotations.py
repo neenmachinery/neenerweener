@@ -1,6 +1,8 @@
 import concurrent.futures
 import os
 
+import html5lib
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
@@ -18,10 +20,35 @@ def test_resolves_rendered_text_across_emphasis_and_links():
     assert rendered.resolutions[0].status == "resolved"
 
 
-def test_resolves_lists_blockquotes_tables_and_headings():
+def test_resolves_lists_blockquotes_and_headings_but_not_table_cells():
     body = "# heading\n\n- first\n- second\n\n> quoted\n\n| left | right |\n| --- | --- |\n| cell | value |"
     rows = [row(1, "heading", kind="heading"), row(2, "second", kind="list_item", index=2), row(3, "quoted", kind="blockquote_paragraph", index=3), row(4, "cell", kind="table_cell", index=4)]
-    assert [r.status for r in resolve(body, rows)] == ["resolved"] * 4
+    assert [r.status for r in resolve(body, rows)] == ["resolved", "resolved", "resolved", "orphaned"]
+
+
+@pytest.mark.parametrize("body", ["before `code`", "before ![image](x)", "before $x$"])
+def test_marker_follows_selection_before_inline_children(body):
+    rendered = render_with_annotations(body, [row(1, "before")]).html
+    assert 'aria-label="note 1"' in rendered
+    assert 'id="note-1-narrow"' in rendered
+
+
+def test_link_annotations_are_valid_and_marker_is_after_link():
+    for body, exact in [("[inside](https://example.test)", "inside"), ("before [inside](https://example.test) after", "before inside after"), ("before [inside](https://example.test) after", "inside"), ("[around inside text](https://example.test)", "around inside")]:
+        rendered = render_with_annotations(body, [row(1, exact)]).html
+        parser = html5lib.HTMLParser(strict=False)
+        parser.parseFragment(rendered)
+        assert parser.errors == []
+        assert rendered.index("</a>") < rendered.index('aria-label="note 1"')
+
+
+def test_annotated_rendering_is_thread_local():
+    body = "one **bold** two"
+    rows = [row(1, "bold")]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        outputs = list(pool.map(lambda _: render_with_annotations(body, rows).html, range(200)))
+    assert len(set(outputs)) == 1
+    assert all('aria-label="note 1"' in output for output in outputs)
 
 
 def test_changed_and_ambiguous_quotes_are_orphaned():
@@ -438,7 +465,7 @@ def test_fallback_details_cover_heading_and_table_cell():
     body = "# heading\n\n| cell |\n| --- |\n| value |"
     rows = [row(1, "heading", kind="heading"), row(2, "value", kind="table_cell", index=2)]
     rendered = render_with_annotations(body, rows).html
-    assert rendered.count('class="ann-note"') == 2
+    assert rendered.count('class="ann-note"') == 1
     assert "</h1>\n<details" in rendered
 
 
