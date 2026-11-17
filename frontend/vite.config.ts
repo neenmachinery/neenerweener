@@ -4,7 +4,6 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   build: {
-    modulePreload: false,
     rolldownOptions: {
       output: {
         // Vite's dynamic-import helper in its own chunk, not in the app entry: the admin post preview frame loads
