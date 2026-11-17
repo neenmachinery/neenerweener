@@ -2014,3 +2014,22 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .forum-item.is-new { transition: none; }
 }
+
+/* public post annotations: a css-only sidenote rail with a native narrow fallback */
+.ann mark { background: none; color: inherit; text-decoration: underline 2px var(--line-strong); text-underline-offset: .25em; }
+.ann:is(:hover, :focus-within, :has(:target)) mark,
+.ann:is(:hover, :focus-within, :has(:target)) .sidenote { background: var(--tint-current); color: var(--fg); border-radius: 2px; text-decoration-color: var(--accent); }
+.ann-ref { color: var(--muted); text-decoration: none; font-variant-numeric: tabular-nums; padding: 0 .15em; }
+.ann:is(:hover, :focus-within, :has(:target)) .ann-ref { color: var(--accent); font-weight: 600; }
+.ann sup { font-size: .75em; line-height: 0; }
+.sidenote { display: none; }
+.ann-note { margin: .5rem 0; padding: .667rem .8rem; border-radius: 6px; background: var(--tint-current); color: var(--muted); font-size: .9em; line-height: 1.55; }
+.ann-note summary { color: var(--muted); cursor: pointer; }
+.ann-note summary::marker { color: var(--faint); }
+@media (min-width: 1040px) {
+  main:has(.sidenote) { max-width: 68.5rem; }
+  main:has(.sidenote) article { padding-right: 16.5rem; display: flow-root; }
+  .sidenote { display: block; float: right; clear: right; width: 14rem; margin: 0 -16.5rem .8rem 0; padding-top: .15rem; font-size: .8667rem; line-height: 1.5; color: var(--muted); }
+  .sidenote .n { color: var(--faint); float: left; margin-right: .4rem; }
+  .ann-note { display: none; }
+}

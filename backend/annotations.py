@@ -243,11 +243,102 @@ def resolve(body: str, rows: Sequence[Annotation]) -> tuple[Resolution, ...]:
     return tuple(results)
 
 
+def _note_html(note: str) -> str:
+    return html.escape(note, quote=True)
+
+
+def _annotation_markup(number: int, row: Annotation, text: str, last: bool) -> str:
+    mark = f'<mark>{html.escape(text, quote=True)}</mark>'
+    if not last:
+        return mark
+    label = f"note {number}"
+    sidenote = "" if len(row.note_text) > 400 else (
+        f'<span class="sidenote" id="note-{number}" role="note">'
+        f'<span class="n" aria-hidden="true">{number}</span> {_note_html(row.note_text)}</span>'
+    )
+    return (
+        f'<span class="ann" id="ann-{number}">{mark}'
+        f'<sup><a class="ann-ref" href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>'
+        f'{sidenote}</span>'
+    )
+
+
+def _render_annotated_inline(token, ranges, numbers, rows, renderer, options, env) -> str:
+    children = token.children or []
+    # markdown-it has already decoded entities in text tokens. Keep the cursor in
+    # the same canonical text model used by the resolver while preserving tags.
+    cursor = 0
+    pieces = []
+    for child in children:
+        if child.type not in {"text", "softbreak", "hardbreak"}:
+            pieces.append(child)
+            if child.type not in _FORMATTING and cursor:
+                cursor += 1
+            continue
+        content = " " if child.type != "text" and child.type != "hardbreak" else ("<br>" if child.type == "hardbreak" else child.content)
+        if child.type != "text":
+            pieces.append(child)
+            cursor += 1
+            continue
+        start = cursor
+        end = start + len(content)
+        cuts = {start, end}
+        for _, left, right in ranges:
+            if left < end and right > start:
+                cuts.update((max(start, left), min(end, right)))
+        points = sorted(cuts)
+        rendered = []
+        for left, right in zip(points, points[1:]):
+            chunk = content[left - start:right - start]
+            active = [(idx, a, b) for idx, a, b in ranges if a <= left and right <= b]
+            if not active:
+                rendered.append(html.escape(chunk, quote=False))
+                continue
+            idx, _, annotation_end = active[-1]
+            number = numbers[idx]
+            rendered.append(_annotation_markup(number, rows[idx], chunk, right >= annotation_end))
+        child.type = "html_inline"
+        child.content = "".join(rendered)
+        pieces.append(child)
+        cursor = end
+    return renderer.renderInline(pieces, options, env)
+
+
 def render_with_annotations(body_markdown: str, rows: Sequence[Annotation]) -> RenderedPost:
     tokens, blocks = _blocks(body_markdown)
     resolutions = resolve(body_markdown, rows)
-    # pr 1 keeps public rendering unchanged; pr 2 owns the reader markup seam.
-    return RenderedPost(_markdown().render(body_markdown), resolutions)
+    resolved = [(i, row, result) for i, (row, result) in enumerate(zip(rows, resolutions)) if result.status == "resolved"]
+    by_block: dict[int, list[tuple[int, int, int]]] = {}
+    for i, _, result in resolved:
+        by_block.setdefault(result.block_index, []).append((i, result.start or 0, result.end or 0))
+    numbers = {i: n for n, (i, _, _) in enumerate(resolved, 1)}
+    row_by_index = {i: row for i, row, _ in resolved}
+    renderer = _markdown().renderer
+    options = _markdown().options
+    output = []
+    eligible_tokens = [
+        token for token in tokens
+        if token.type == "inline" and token.children and not _contains_raw_html(token.children)
+        and _inline_segments(token.children)[0]
+    ]
+    block_lookup = {id(token): block.index for token, block in zip(eligible_tokens, blocks)}
+    for token in tokens:
+        if token.type == "inline" and id(token) in block_lookup:
+            block = block_lookup[id(token)]
+            output.append(_render_annotated_inline(token, by_block.get(block, []), numbers, row_by_index, renderer, options, {}))
+        elif token.type == "inline":
+            output.append(renderer.renderInline(token.children or [], options, {}))
+        else:
+            output.append(renderer.render([token], options, {}))
+        if token.type == "paragraph_close":
+            block = block_lookup.get(id(tokens[tokens.index(token) - 1]))
+            notes = by_block.get(block, []) if block is not None else []
+            for idx, _, _ in notes:
+                number = numbers[idx]
+                row = row_by_index[idx]
+                note = _note_html(row.note_text)
+                output.append(f'<details class="ann-note" id="note-{number}-narrow"><summary>note {number}</summary><p>{note}</p></details>')
+    return RenderedPost("".join(output), resolutions)
 
 
 class AnnotationStore:

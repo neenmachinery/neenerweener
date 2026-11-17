@@ -166,10 +166,10 @@ def test_validation_rejects_bad_selector_and_note():
         validate_note("\x00")
 
 
-def test_note_is_not_rendered_in_pr1():
+def test_resolved_note_is_rendered_for_readers():
     result = render_with_annotations("text", [row(1, "text")])
-    assert "a note" not in result.html
-    assert "<mark" not in result.html
+    assert 'class="sidenote"' in result.html
+    assert "a note" in result.html
 
 
 @pytest.fixture
