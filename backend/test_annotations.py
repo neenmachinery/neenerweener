@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
 
 import app
-from annotations import Annotation, AnnotationStore, Selector, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
+from annotations import Annotation, AnnotationStore, Selector, _blocks, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
 
 
 def row(number, exact, *, kind="paragraph", index=0, prefix="", suffix=""):
@@ -50,6 +50,49 @@ def test_eligible_text_around_unsupported_inline_child_keeps_block_offsets():
     results = resolve(body, [row(1, "allowed"), row(2, "tail"), row(3, "allowed `code` tail")])
     assert [result.status for result in results] == ["resolved", "resolved", "orphaned"]
     assert results[2].reason == "not-found"
+
+
+def test_inline_segments_use_canonical_cursor_for_fixture_matrix():
+    fixtures = [
+        ("allowed `code` tail", "allowed tail"),
+        ("`code` tail", "tail"),
+        ("allowed `code`", "allowed"),
+        ("one `code` two ![image](x) three", "one two three"),
+        ("one  two\nthree", "one two three"),
+        ("one  \ntwo", "one two"),
+        ("one &amp; two&nbsp;three", "one & two three"),
+        ("*one* [two](x) `code` three", "one two three"),
+        ("# heading `code` tail", "heading tail"),
+    ]
+    for body, canonical in fixtures:
+        _, blocks = _blocks(body)
+        assert len(blocks) == 1
+        block = blocks[0]
+        assert block.text == canonical
+        for segment, start in block.segments:
+            end = start + len(segment)
+            assert 0 <= start <= end <= len(canonical)
+            assert canonical[start:end] == segment
+
+
+def test_inline_segment_ranges_after_unsupported_child_are_exact():
+    _, blocks = _blocks("allowed `code` tail")
+    assert blocks[0].segments == [("allowed", 0), ("tail", 8)]
+
+
+def test_lock_order_is_sorted():
+    class Engine:
+        class Context:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def begin(self): return self
+            dialect = type("Dialect", (), {"name": "sqlite"})()
+        def begin(self): return self.Context()
+    store = AnnotationStore("sqlite://", engine=Engine())
+    calls = []
+    store._lock = lambda connection, slug: calls.append(slug)
+    store._write(["zeta", "alpha", "zeta"], lambda connection: None)
+    assert calls == ["alpha", "zeta"]
 
 
 def test_validation_rejects_bad_selector_and_note():

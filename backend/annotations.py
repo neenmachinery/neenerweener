@@ -115,34 +115,59 @@ def _markdown() -> MarkdownIt:
     return parser
 
 
+_FORMATTING = {"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}
+
+
 def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
     parts: list[str] = []
     segments: list[tuple[str, int]] = []
-    eligible: list[str] = []
-    offset = 0
+    run: list[str] = []
+    cursor = 0
+
+    def flush() -> None:
+        nonlocal cursor
+        segment = re.sub(r"\s+", " ", "".join(run)).strip()
+        if not segment:
+            return
+        if parts:
+            parts.append(" ")
+            cursor += 1
+        segments.append((segment, cursor))
+        parts.append(segment)
+        cursor += len(segment)
+
     for child in children:
         if child.type in {"text", "softbreak", "hardbreak"}:
-            eligible.append(" " if child.type != "text" else child.content)
+            run.append(" " if child.type != "text" else child.content)
+        elif child.type in _FORMATTING:
             continue
-        if child.type in {"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}:
-            continue
-        if eligible:
-            segment = re.sub(r"\s+", " ", "".join(eligible)).strip()
-            if segment:
-                start = offset + len("".join(eligible)) - len("".join(eligible).lstrip())
-                segments.append((segment, start))
-                parts.append(segment)
-                offset += len("".join(eligible))
-            eligible = []
-        offset += len(getattr(child, "content", "")) + 1
-    if eligible:
-        raw = "".join(eligible)
-        segment = re.sub(r"\s+", " ", raw).strip()
-        if segment:
-            start = offset + len(raw) - len(raw.lstrip())
-            segments.append((segment, start))
-            parts.append(segment)
-    return " ".join(parts), segments
+        else:
+            flush()
+            run.clear()
+    flush()
+    return "".join(parts), segments
+
+
+def _stack_change(token_type: str, stack: list[str]) -> bool:
+    if token_type == "blockquote_open":
+        stack.append("blockquote")
+    elif token_type == "list_item_open":
+        stack.append("list_item")
+    elif token_type in ("blockquote_close", "list_item_close"):
+        stack.pop()
+    else:
+        return False
+    return True
+
+
+def _block_kind(parent: str, stack: list[str]) -> str | None:
+    if parent == "heading_open":
+        return "heading"
+    if parent == "paragraph_open":
+        return stack[-1] + "_paragraph" if stack and stack[-1] == "blockquote" else ("list_item" if stack and stack[-1] == "list_item" else "paragraph")
+    if parent in ("th_open", "td_open"):
+        return "table_cell"
+    return None
 
 
 def _blocks(body: str):
@@ -151,20 +176,13 @@ def _blocks(body: str):
     stack: list[str] = []
     index = 0
     for pos, token in enumerate(tokens):
-        if token.type.endswith("_open"):
-            if token.type == "blockquote_open": stack.append("blockquote")
-            elif token.type == "list_item_open": stack.append("list_item")
-            continue
-        if token.type.endswith("_close"):
-            if token.type in ("blockquote_close", "list_item_close"): stack.pop()
+        if _stack_change(token.type, stack):
             continue
         if token.type != "inline" or not token.children:
             continue
-        parent = tokens[pos - 1].type if pos else ""
-        if parent == "heading_open": kind = "heading"
-        elif parent == "paragraph_open": kind = "blockquote_paragraph" if stack and stack[-1] == "blockquote" else ("list_item" if stack and stack[-1] == "list_item" else "paragraph")
-        elif parent in ("th_open", "td_open"): kind = "table_cell"
-        else: continue
+        kind = _block_kind(tokens[pos - 1].type if pos else "", stack)
+        if kind is None:
+            continue
         text, segments = _inline_segments(token.children)
         if text:
             blocks.append(_Block(kind, index, text, segments))
