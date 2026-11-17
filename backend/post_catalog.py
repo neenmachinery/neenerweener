@@ -26,7 +26,7 @@ class PostCatalog:
         self.store = store
 
     def list_public(self, tag: str | None = None) -> list[dict]:
-        files = {post["slug"]: dict(post) for post in self.file_loader()}
+        files = {post["slug"]: {**post, "_annotation_source": True} for post in self.file_loader()}
         try:
             web = [] if self.store is None else self.store.list_public()
         except Exception as exc:
@@ -39,7 +39,7 @@ class PostCatalog:
         return posts if tag is None else [post for post in posts if tag in post["tags"]]
 
     def get_public(self, slug: str) -> dict | PostRedirect | None:
-        files = {post["slug"]: dict(post) for post in self.file_loader()}
+        files = {post["slug"]: {**post, "_annotation_source": True} for post in self.file_loader()}
         if slug in files:
             return files[slug]
         if self.store is None:
