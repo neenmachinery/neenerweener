@@ -317,30 +317,44 @@ def render_with_annotations(body_markdown: str, rows: Sequence[Annotation]) -> R
     row_by_index = {i: row for i, row, _ in resolved}
     renderer = _markdown().renderer
     options = _markdown().options
-    output = []
     eligible_tokens = [
         token for token in tokens
         if token.type == "inline" and token.children and not _contains_raw_html(token.children)
         and _inline_segments(token.children)[0]
     ]
     block_lookup = {id(token): block.index for token, block in zip(eligible_tokens, blocks)}
-    for token in tokens:
-        if token.type == "inline" and id(token) in block_lookup:
-            block = block_lookup[id(token)]
-            output.append(_render_annotated_inline(token, by_block.get(block, []), numbers, row_by_index, renderer, options, {}))
-        elif token.type == "inline":
-            output.append(renderer.renderInline(token.children or [], options, {}))
+    children_lookup = {id(token.children): block.index for token, block in zip(eligible_tokens, blocks)}
+    original_render_inline = renderer.renderInline
+    original_paragraph_close = renderer.rules.get("paragraph_close")
+
+    def render_inline(children, render_options, env):
+        block = children_lookup.get(id(children))
+        if block is None:
+            return original_render_inline(children, render_options, env)
+        token = type("InlineToken", (), {"children": children})()
+        return _render_annotated_inline(token, by_block.get(block, []), numbers, row_by_index, renderer, render_options, env)
+
+    def render_paragraph_close(all_tokens, index, render_options, env):
+        result = original_paragraph_close(all_tokens, index, render_options, env) if original_paragraph_close else "</p>\n"
+        inline = all_tokens[index - 1] if index else None
+        notes = by_block.get(block_lookup.get(id(inline)), []) if inline is not None else []
+        for idx, _, _ in notes:
+            number = numbers[idx]
+            note = _note_html(row_by_index[idx].note_text)
+            result += f'<details class="ann-note" id="note-{number}-narrow"><summary>note {number}</summary><p>{note}</p></details>'
+        return result
+
+    renderer.renderInline = render_inline
+    renderer.rules["paragraph_close"] = render_paragraph_close
+    try:
+        html_output = renderer.render(tokens, options, {})
+    finally:
+        renderer.renderInline = original_render_inline
+        if original_paragraph_close is None:
+            renderer.rules.pop("paragraph_close", None)
         else:
-            output.append(renderer.render([token], options, {}))
-        if token.type == "paragraph_close":
-            block = block_lookup.get(id(tokens[tokens.index(token) - 1]))
-            notes = by_block.get(block, []) if block is not None else []
-            for idx, _, _ in notes:
-                number = numbers[idx]
-                row = row_by_index[idx]
-                note = _note_html(row.note_text)
-                output.append(f'<details class="ann-note" id="note-{number}-narrow"><summary>note {number}</summary><p>{note}</p></details>')
-    return RenderedPost("".join(output), resolutions)
+            renderer.rules["paragraph_close"] = original_paragraph_close
+    return RenderedPost(html_output, resolutions)
 
 
 class AnnotationStore:
