@@ -1629,7 +1629,7 @@ async def create_admin_annotation(request: Request, _access: Access = Depends(re
     payload = await _bounded_json(request, AnnotationCreateRequest)
     post = await asyncio.to_thread(_file_post, payload.post_slug)
     selector = _selector(payload.selector)
-    try: row = await asyncio.to_thread(_annotation_storage().create_or_repair, payload.post_slug, selector, payload.note_text, post["body"])
+    try: row = await asyncio.to_thread(_annotation_storage().create, payload.post_slug, selector, payload.note_text, post["body"])
     except ValueError as exc: raise _annotation_error(exc) from exc
     except HTTPException: raise
     except Exception as exc:
@@ -1657,7 +1657,7 @@ async def repair_admin_annotation(annotation_id: PositiveInt, request: Request, 
     payload = await _bounded_json(request, AnnotationRepairRequest)
     post = await asyncio.to_thread(_file_post, payload.post_slug)
     selector = _selector(payload.selector)
-    try: row = await asyncio.to_thread(_annotation_storage().create_or_repair, payload.post_slug, selector, "", post["body"], annotation_id)
+    try: row = await asyncio.to_thread(_annotation_storage().repair, annotation_id, payload.post_slug, selector, post["body"])
     except ValueError as exc: raise _annotation_error(exc) from exc
     except Exception as exc:
         logger.warning("annotation storage unavailable: %s", type(exc).__name__)
@@ -1668,7 +1668,12 @@ async def repair_admin_annotation(annotation_id: PositiveInt, request: Request, 
 
 @app.delete("/api/admin/annotations/{annotation_id}", status_code=204)
 def delete_admin_annotation(annotation_id: PositiveInt, _access: Access = Depends(require_browser_mutation)):
-    if not _annotation_storage().delete(annotation_id): raise HTTPException(404, "annotation not found")
+    try:
+        deleted = _annotation_storage().delete(annotation_id)
+    except Exception as exc:
+        logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "admin unavailable") from exc
+    if not deleted: raise HTTPException(404, "annotation not found")
     return Response(status_code=204)
 
 

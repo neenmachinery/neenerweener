@@ -45,6 +45,13 @@ def test_unsupported_content_is_not_eligible():
     assert [result.reason for result in results] == ["not-found", None]
 
 
+def test_eligible_text_around_unsupported_inline_child_keeps_block_offsets():
+    body = "allowed `code` tail"
+    results = resolve(body, [row(1, "allowed"), row(2, "tail"), row(3, "allowed `code` tail")])
+    assert [result.status for result in results] == ["resolved", "resolved", "orphaned"]
+    assert results[2].reason == "not-found"
+
+
 def test_validation_rejects_bad_selector_and_note():
     with pytest.raises(ValueError):
         validate_selector(Selector("paragraph", 0, "x" * 2001))
@@ -73,25 +80,61 @@ def annotation_db():
     store.close()
 
 
-def test_postgres_rejects_blank_and_overlong_notes(annotation_db):
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"post_slug": "BAD", "block_kind": "paragraph", "block_index": 0, "exact": "x", "note_text": "note"},
+        {"post_slug": "sample", "block_kind": "bad", "block_index": 0, "exact": "x", "note_text": "note"},
+        {"post_slug": "sample", "block_kind": "paragraph", "block_index": -1, "exact": "x", "note_text": "note"},
+        {"post_slug": "sample", "block_kind": "paragraph", "block_index": 0, "exact": "x" * 2001, "note_text": "note"},
+        {"post_slug": "sample", "block_kind": "paragraph", "block_index": 0, "exact": "x", "prefix": "x" * 65, "note_text": "note"},
+        {"post_slug": "sample", "block_kind": "paragraph", "block_index": 0, "exact": "x", "note_text": "  "},
+        {"post_slug": "sample", "block_kind": "paragraph", "block_index": 0, "exact": "x", "note_text": "x" * 2001},
+    ],
+)
+def test_postgres_constraints_reject_invalid_rows(annotation_db, values):
     with pytest.raises(Exception):
-        annotation_db.create_or_repair("sample", Selector("paragraph", 0, "text"), " " * 2, "text")
-    with pytest.raises(Exception):
-        annotation_db.create_or_repair("sample", Selector("paragraph", 0, "text"), "x" * 2001, "text")
+        with annotation_db.engine.begin() as connection:
+            connection.execute(post_annotations.insert().values(**values))
 
 
 def test_postgres_create_and_repair_round_trip(annotation_db):
-    created = annotation_db.create_or_repair("sample", Selector("paragraph", 0, "old"), " note ", "old")
-    repaired = annotation_db.create_or_repair("sample", Selector("paragraph", 0, "new"), " note ", "new", created.id)
+    created = annotation_db.create("sample", Selector("paragraph", 0, "old"), " note ", "old")
+    repaired = annotation_db.repair(created.id, "sample", Selector("paragraph", 0, "new"), "new")
     assert repaired.id == created.id
     assert annotation_db.list_for_post("sample")[0].selector.exact == "new"
     assert annotation_db.list_for_post("sample")[0].note_text == " note "
 
 
+def test_postgres_repair_can_move_annotation_to_changed_slug(annotation_db):
+    created = annotation_db.create("sample", Selector("paragraph", 0, "old"), " note ", "old")
+    repaired = annotation_db.repair(created.id, "other", Selector("paragraph", 0, "new"), "new")
+    assert repaired.post_slug == "other"
+    assert annotation_db.list_for_post("sample") == []
+    assert annotation_db.list_for_post("other")[0].note_text == " note "
+
+
+def test_postgres_repair_put_same_and_changed_slug(annotation_db, monkeypatch):
+    created = annotation_db.create("sample", Selector("paragraph", 0, "old"), " note ", "old")
+    monkeypatch.setattr(app, "annotation_store", annotation_db)
+    monkeypatch.setattr(app, "post_catalog", _Catalog())
+    app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
+    try:
+        with TestClient(app.app) as client:
+            same = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
+            moved = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"other", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
+        assert same.status_code == 200
+        assert moved.status_code == 200
+        assert moved.json()["post_slug"] == "other"
+        assert moved.json()["note_text"] == " note "
+    finally:
+        app.app.dependency_overrides.clear()
+
+
 def test_postgres_overlapping_creates_are_serialized(annotation_db):
     selectors = [Selector("paragraph", 0, "abc"), Selector("paragraph", 0, "bcd")]
     def create(selector):
-        return annotation_db.create_or_repair("sample", selector, "note", "abcd")
+        return annotation_db.create("sample", selector, "note", "abcd")
     def safe_create(selector):
         try:
             return create(selector)
@@ -122,9 +165,14 @@ class _FakeStore:
         self.rows = []
     def list_for_post(self, slug): return self.rows
     def list_admin(self): return self.rows
-    def create_or_repair(self, slug, selector, note_text, body, annotation_id=None):
+    def create(self, slug, selector, note_text, body):
         if self.error: raise ValueError(self.error)
         row = Annotation(1, slug, selector, note_text)
+        self.rows = [row]
+        return row
+    def repair(self, annotation_id, slug, selector, body):
+        if self.error: raise ValueError(self.error)
+        row = Annotation(annotation_id, slug, selector, "existing note")
         self.rows = [row]
         return row
     def update_note(self, annotation_id, note_text): return None
@@ -181,6 +229,18 @@ def test_annotation_api_store_outage_is_503(monkeypatch):
         app.app.dependency_overrides.clear()
 
 
+def test_annotation_api_delete_store_outage_is_503(monkeypatch):
+    class Store(_FakeStore):
+        def delete(self, annotation_id): raise RuntimeError("database down")
+    monkeypatch.setattr(app, "annotation_store", Store())
+    app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
+    try:
+        with TestClient(app.app) as client:
+            assert client.delete("/api/admin/annotations/1").status_code == 503
+    finally:
+        app.app.dependency_overrides.clear()
+
+
 def test_annotation_api_note_is_stored_exactly_as_sent(annotation_api):
     app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
     try:
@@ -206,6 +266,22 @@ def test_annotation_api_missing_post_update_is_orphaned(monkeypatch):
             response = client.patch("/api/admin/annotations/1", json={"note_text":"note"})
         assert response.status_code == 200
         assert response.json()["reason"] == "missing-post"
+    finally:
+        app.app.dependency_overrides.clear()
+
+
+def test_annotation_api_repair_preserves_note_and_moves_slug(monkeypatch):
+    class Store(_FakeStore):
+        def repair(self, annotation_id, slug, selector, body):
+            return Annotation(annotation_id, slug, selector, "kept note")
+    monkeypatch.setattr(app, "annotation_store", Store())
+    monkeypatch.setattr(app, "post_catalog", _Catalog())
+    app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
+    try:
+        with TestClient(app.app) as client:
+            response = client.put("/api/admin/annotations/1/anchor", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
+        assert response.status_code == 200
+        assert response.json()["note_text"] == "kept note"
     finally:
         app.app.dependency_overrides.clear()
 
