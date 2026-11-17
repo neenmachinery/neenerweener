@@ -80,6 +80,60 @@ def test_inline_segment_ranges_after_unsupported_child_are_exact():
     assert blocks[0].segments == [("allowed", 0), ("tail", 8)]
 
 
+def test_context_uses_canonical_text_but_selection_stays_segment_local():
+    body = "left `x` target\n\ntarget `x` right"
+    prefix = resolve(body, [row(1, "target", index=0, prefix="left ")])[0]
+    suffix = resolve(body, [row(2, "target", index=1, suffix=" right")])[0]
+    cross = resolve("left `x` target", [row(3, "left x target")])[0]
+    assert (prefix.status, prefix.start, prefix.end) == ("resolved", 5, 11)
+    assert (suffix.status, suffix.start, suffix.end) == ("resolved", 0, 6)
+    assert cross.reason == "not-found"
+
+
+@pytest.mark.parametrize("body, inside, outside", [
+    ("alpha <i>inside</i> omega", "inside", ("alpha", "omega")),
+    ("<b><i>x</i></b>", "x", ()),
+    ("alpha <br/><i>inside</i><img src='x'> omega", "inside", ("alpha", "omega")),
+    ("alpha <!-- hidden --> omega", "hidden", ("alpha", "omega")),
+    ("alpha <i>inside", "inside", ("alpha",)),
+    ("*alpha <i>inside</i> omega*", "inside", ("alpha", "omega")),
+    ("[alpha <i>inside</i> omega](x)", "inside", ("alpha", "omega")),
+])
+def test_inline_raw_html_subtrees_are_not_selectable(body, inside, outside):
+    _, blocks = _blocks(body)
+    if not blocks:
+        assert not outside
+        assert resolve(body, [row(1, inside)])[0].reason == "not-found"
+        return
+    block = blocks[0]
+    assert all(block.text[start:start + len(segment)] == segment for segment, start in block.segments)
+    assert resolve(body, [row(1, inside)])[0].reason == "not-found"
+    for number, text_value in enumerate(outside, 2):
+        assert resolve(body, [row(number, text_value)])[0].status == "resolved"
+
+
+@pytest.mark.parametrize("seed", range(10))
+def test_lock_order_is_sorted_for_every_hash_seed(seed):
+    import subprocess
+    script = '''
+from annotations import AnnotationStore
+class Engine:
+    class Context:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def begin(self): return self
+        dialect = type("Dialect", (), {"name": "sqlite"})()
+    def begin(self): return self.Context()
+store = AnnotationStore("sqlite://", engine=Engine())
+calls = []
+store._lock = lambda connection, slug: calls.append(slug)
+store._write({"alpha", "zeta"}, lambda connection: None)
+assert calls == ["alpha", "zeta"]
+'''
+    result = subprocess.run(["uv", "run", "python", "-c", script], env={**os.environ, "PYTHONHASHSEED": str(seed)}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_lock_order_is_sorted():
     class Engine:
         class Context:

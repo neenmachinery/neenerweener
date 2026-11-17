@@ -116,6 +116,10 @@ def _markdown() -> MarkdownIt:
 
 
 _FORMATTING = {"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}
+_VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+_HTML_CLOSE = re.compile(r"^</\s*([A-Za-z][\w:-]*)\s*>")
+_HTML_OPEN = re.compile(r"^<\s*([A-Za-z][\w:-]*)(?:\s[^>]*)?>$")
+_HTML_SELF_CLOSING = re.compile(r"^<\s*([A-Za-z][\w:-]*)(?:\s[^>]*)?/\s*>")
 
 
 def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
@@ -123,6 +127,7 @@ def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
     segments: list[tuple[str, int]] = []
     run: list[str] = []
     cursor = 0
+    html_stack: list[str] = []
 
     def flush() -> None:
         nonlocal cursor
@@ -138,7 +143,26 @@ def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
 
     for child in children:
         if child.type in {"text", "softbreak", "hardbreak"}:
-            run.append(" " if child.type != "text" else child.content)
+            if not html_stack:
+                run.append(" " if child.type != "text" else child.content)
+        elif child.type == "html_inline":
+            flush()
+            run.clear()
+            content = child.content
+            if content.startswith("<!--"):
+                continue
+            closing = _HTML_CLOSE.match(content)
+            if closing:
+                name = closing.group(1).lower()
+                if name in html_stack:
+                    del html_stack[html_stack.index(name):]
+                continue
+            self_closing = _HTML_SELF_CLOSING.match(content)
+            if self_closing:
+                continue
+            opening = _HTML_OPEN.match(content)
+            if opening and opening.group(1).lower() not in _VOID_HTML_TAGS:
+                html_stack.append(opening.group(1).lower())
         elif child.type in _FORMATTING:
             continue
         else:
@@ -199,8 +223,9 @@ def _candidates(blocks, selector):
             while True:
                 at = segment.find(selector.exact, start)
                 if at < 0: break
-                before = segment[max(0, at-len(selector.prefix)):at]
-                after = segment[at+len(selector.exact):at+len(selector.exact)+len(selector.suffix)]
+                canonical_at = offset + at
+                before = block.text[max(0, canonical_at-len(selector.prefix)):canonical_at]
+                after = block.text[canonical_at+len(selector.exact):canonical_at+len(selector.exact)+len(selector.suffix)]
                 score = (before == selector.prefix, after == selector.suffix, block.index == selector.block_index)
                 candidates.append((score, block, offset + at, offset + at + len(selector.exact)))
                 start = at + 1
