@@ -123,6 +123,7 @@ main > footer,
   bottom: 0;
   order: 2;
   display: flex;
+  flex-wrap: wrap;
   gap: 1.5rem;
   padding-block: 1.1rem calc(1.1rem + env(safe-area-inset-bottom));
   border-top: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
@@ -2019,11 +2020,11 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
 .ann mark { background: none; color: inherit; text-decoration: underline 2px var(--line-strong); text-underline-offset: .25em; }
 .ann:is(:hover, :focus-within, :has(:target)) mark,
 .ann:is(:hover, :focus-within, :has(:target)) .sidenote { background: var(--tint-current); color: var(--fg); border-radius: 2px; text-decoration-color: var(--accent); }
-.ann-ref { color: var(--muted); text-decoration: none; font-variant-numeric: tabular-nums; padding: 0 .15em; }
+.ann-ref { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; margin: -15px -14px; color: var(--muted); text-decoration: none; font-variant-numeric: tabular-nums; padding: 0 .15em; }
 .ann:is(:hover, :focus-within, :has(:target)) .ann-ref { color: var(--accent); font-weight: 600; }
 .ann sup { font-size: .75em; line-height: 0; }
-.sidenote { display: none; }
-.ann-note { margin: .5rem 0; padding: .667rem .8rem; border-radius: 6px; background: var(--tint-current); color: var(--muted); font-size: .9em; line-height: 1.55; }
+.sidenote { display: none; white-space: pre-wrap; }
+.ann-note { margin: .5rem 0; padding: .667rem .8rem; border-radius: 6px; background: var(--tint-current); color: var(--muted); font-size: .9em; line-height: 1.55; white-space: pre-wrap; }\n.ann-note p { white-space: pre-wrap; }
 .ann-note summary { color: var(--muted); cursor: pointer; }
 .ann-note summary::marker { color: var(--faint); }
 @media (min-width: 1040px) {
@@ -2031,5 +2032,5 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
   main:has(.sidenote) article { padding-right: 16.5rem; display: flow-root; }
   .sidenote { display: block; float: right; clear: right; width: 14rem; margin: 0 -16.5rem .8rem 0; padding-top: .15rem; font-size: .8667rem; line-height: 1.5; color: var(--muted); }
   .sidenote .n { color: var(--faint); float: left; margin-right: .4rem; }
-  .ann-note { display: none; }
+  .ann-note { display: none; }\n  .ann-note.ann-note-long { display: block; }
 }

@@ -108,6 +108,8 @@ class _Block:
     index: int
     text: str
     segments: list[tuple[str, int]]
+    # one entry per canonical character: (inline child, raw character index), or None
+    positions: list[tuple[object, int] | None]
 
 
 def _markdown() -> MarkdownIt:
@@ -124,34 +126,56 @@ def _contains_raw_html(children) -> bool:
     return any(child.type == "html_inline" for child in children)
 
 
-def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
+def _inline_map(children) -> tuple[str, list[tuple[str, int]], list[tuple[object, int] | None]]:
     parts: list[str] = []
     segments: list[tuple[str, int]] = []
-    run: list[str] = []
+    positions: list[tuple[object, int] | None] = []
+    run: list[tuple[str, object, int]] = []
     cursor = 0
 
     def flush() -> None:
         nonlocal cursor
-        segment = re.sub(r"\s+", " ", "".join(run)).strip()
-        if not segment:
+        if not run:
+            return
+        out: list[tuple[str, object, int]] = []
+        whitespace = False
+        for char, child, raw in run:
+            if char.isspace():
+                if not whitespace:
+                    out.append((" ", child, raw))
+                whitespace = True
+            else:
+                out.append((char, child, raw))
+                whitespace = False
+        while out and out[0][0] == " ": out.pop(0)
+        while out and out[-1][0] == " ": out.pop()
+        if not out:
+            run.clear()
             return
         if parts:
-            parts.append(" ")
-            cursor += 1
-        segments.append((segment, cursor))
-        parts.append(segment)
+            parts.append(" "); positions.append(None); cursor += 1
+        segment = "".join(char for char, _, _ in out)
+        segments.append((segment, cursor)); parts.append(segment)
+        positions.extend((child, raw) for _, child, raw in out)
         cursor += len(segment)
+        run.clear()
 
     for child in children:
-        if child.type in {"text", "softbreak", "hardbreak"}:
-            run.append(" " if child.type != "text" else child.content)
+        if child.type == "text":
+            run.extend((char, child, i) for i, char in enumerate(child.content))
+        elif child.type in {"softbreak", "hardbreak"}:
+            run.append((" ", child, -1))
         elif child.type in _FORMATTING:
             continue
         else:
             flush()
-            run.clear()
     flush()
-    return "".join(parts), segments
+    return "".join(parts), segments, positions
+
+
+def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
+    text, segments, _ = _inline_map(children)
+    return text, segments
 
 
 def _stack_change(token_type: str, stack: list[str]) -> bool:
@@ -176,8 +200,8 @@ def _block_kind(parent: str, stack: list[str]) -> str | None:
     return None
 
 
-def _blocks(body: str, *, heading_anchors: bool = False):
-    tokens = _markdown().parse(body, {"heading_anchors": True} if heading_anchors else {})
+def _blocks(body: str, *, heading_anchors: bool = False, parser: MarkdownIt | None = None):
+    tokens = (parser or _markdown()).parse(body, {"heading_anchors": True} if heading_anchors else {})
     blocks: list[_Block] = []
     stack: list[str] = []
     index = 0
@@ -191,9 +215,9 @@ def _blocks(body: str, *, heading_anchors: bool = False):
             continue
         if _contains_raw_html(token.children):
             continue
-        text, segments = _inline_segments(token.children)
+        text, segments, positions = _inline_map(token.children)
         if text:
-            blocks.append(_Block(kind, index, text, segments))
+            blocks.append(_Block(kind, index, text, segments, positions))
             index += 1
     return tokens, blocks
 
@@ -249,8 +273,8 @@ def _note_html(note: str) -> str:
     return html.escape(note, quote=True)
 
 
-def _annotation_markup(number: int, row: Annotation, text: str, last: bool) -> str:
-    mark = f'<mark>{html.escape(text, quote=True)}</mark>'
+def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, escaped: bool = False) -> str:
+    mark = f'<mark>{text if escaped else html.escape(text, quote=True)}</mark>'
     if not last:
         return mark
     label = f"note {number}"
@@ -265,121 +289,113 @@ def _annotation_markup(number: int, row: Annotation, text: str, last: bool) -> s
     )
 
 
-def _render_annotated_inline(token, ranges, numbers, rows, renderer, options, env) -> str:
+def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, options, env) -> str:
     children = token.children or []
-    # Use the resolver's segments to map source token text to canonical offsets.
-    _, segments = _inline_segments(children)
-    segment_index = 0
-    segment_used = 0
-    segment_active = False
+    by_source: dict[tuple[int, int], list[int]] = {}
+    for canonical, source in enumerate(block.positions):
+        if source is not None:
+            by_source.setdefault((id(source[0]), source[1]), []).append(canonical)
+
     pieces = []
     for child in children:
-        if child.type not in {"text", "softbreak", "hardbreak"}:
-            pieces.append(child)
-            if child.type not in _FORMATTING:
-                if segment_active:
-                    segment_index += 1
-                segment_used = 0
-                segment_active = False
-            continue
-        if child.type != "text":
-            if segment_index < len(segments):
-                segment, segment_start = segments[segment_index]
-                left = segment_start + segment_used
-                right = left + 1
-                active = [(idx, a, b) for idx, a, b in ranges if a <= left and right <= b]
-                if active:
-                    idx, _, annotation_end = active[-1]
-                    content = " " if child.type == "softbreak" else " <br>"
-                    child.type = "html_inline"
-                    child.content = _annotation_markup(numbers[idx], rows[idx], content, right >= annotation_end)
-            pieces.append(child)
-            segment_used += 1
-            continue
-        normalized = re.sub(r"\s+", " ", child.content).strip()
-        if not normalized:
-            pieces.append(child)
-            continue
-        segment, segment_start = segments[segment_index]
-        found = segment.find(normalized, segment_used)
-        if found < 0:
-            # The resolver and renderer must share a cursor model. This is only
-            # reachable if markdown-it changes its inline tokenization.
-            pieces.append(child)
-            continue
-        leading = len(child.content) - len(child.content.lstrip())
-        start = segment_start + found - leading
-        end = start + len(child.content)
-        segment_used = found + len(normalized)
-        segment_active = True
-        cuts = {start, end}
-        for _, left, right in ranges:
-            if left < end and right > start:
-                cuts.update((max(start, left), min(end, right)))
-        points = sorted(cuts)
-        rendered = []
-        for left, right in zip(points, points[1:]):
-            chunk = child.content[left - start:right - start]
-            active = [(idx, a, b) for idx, a, b in ranges if a <= left and right <= b]
-            if not active:
-                rendered.append(html.escape(chunk, quote=False))
+        if child.type in {"text", "softbreak", "hardbreak"}:
+            if child.type in {"softbreak", "hardbreak"}:
+                # Keep the break token. A marked canonical space keeps selector text exact.
+                canonical = by_source.get((id(child), -1), [])
+                active = next((idx for idx, left, right in ranges if canonical and left <= canonical[0] < right), None)
+                if active is not None:
+                    pieces.append(type("InlineToken", (), {"type": "html_inline", "content": _annotation_markup(numbers[active], rows[active], " ", False, escaped=True)})())
+                pieces.append(child)
                 continue
-            idx, _, annotation_end = active[-1]
-            rendered.append(_annotation_markup(numbers[idx], rows[idx], chunk, right >= annotation_end))
-        child.type = "html_inline"
-        child.content = "".join(rendered)
+            raw_positions = [by_source.get((id(child), i), []) for i in range(len(child.content))]
+            fragments: list[str] = []
+            current: list[str] = []
+            current_annotation = None
+            for raw_index, canonical_positions in enumerate(raw_positions):
+                canonical = canonical_positions[0] if canonical_positions else None
+                active = next((idx for idx, left, right in ranges if canonical is not None and left <= canonical < right), None)
+                if active != current_annotation and current:
+                    content = ''.join(current)
+                    if current_annotation is None:
+                        fragments.append(content)
+                    else:
+                        end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
+                        child_end = max(canonical_positions, default=-1) + 1
+                        fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, end <= child_end, escaped=True))
+                    current = []
+                current_annotation = active
+                if child.type == "text":
+                    current.append(html.escape(child.content[raw_index], quote=False))
+                else:
+                    # keep markdown-it's break element instead of escaping a synthetic <br>.
+                    current.append("<br>\n" if child.type == "hardbreak" else "\n")
+            if current:
+                content = ''.join(current)
+                if current_annotation is None:
+                    fragments.append(content)
+                else:
+                    end = max((right for idx, _, right in ranges if idx == current_annotation), default=0)
+                    child_end = max((p for positions in raw_positions for p in positions), default=-1) + 1
+                    fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, end <= child_end, escaped=True))
+            child.type = "html_inline"
+            child.content = ''.join(fragments)
         pieces.append(child)
     return renderer.renderInline(pieces, options, env)
 
 
-def render_with_annotations(body_markdown: str, rows: Sequence[Annotation]) -> RenderedPost:
-    tokens, blocks = _blocks(body_markdown, heading_anchors=True)
+def render_with_annotations(body_markdown: str, rows: Sequence[Annotation], parser: MarkdownIt | None = None) -> RenderedPost:
+    parser = parser or _markdown()
+    tokens, blocks = _blocks(body_markdown, heading_anchors=True, parser=parser)
     resolutions = resolve(body_markdown, rows)
     resolved = [(i, row, result) for i, (row, result) in enumerate(zip(rows, resolutions)) if result.status == "resolved"]
+    if not resolved:
+        return RenderedPost(_markdown().render(body_markdown, {"heading_anchors": True}), resolutions)
+    # Numbering is part of the document, not insertion order.
+    resolved.sort(key=lambda item: (item[2].block_index, item[2].start, item[0]))
     by_block: dict[int, list[tuple[int, int, int]]] = {}
     for i, _, result in resolved:
         by_block.setdefault(result.block_index, []).append((i, result.start or 0, result.end or 0))
     numbers = {i: n for n, (i, _, _) in enumerate(resolved, 1)}
     row_by_index = {i: row for i, row, _ in resolved}
-    renderer = _markdown().renderer
-    options = _markdown().options
-    eligible_tokens = [
-        token for token in tokens
-        if token.type == "inline" and token.children and not _contains_raw_html(token.children)
-        and _inline_segments(token.children)[0]
-    ]
-    block_lookup = {id(token): block.index for token, block in zip(eligible_tokens, blocks)}
-    children_lookup = {id(token.children): block.index for token, block in zip(eligible_tokens, blocks)}
+    renderer = parser.renderer
+    options = parser.options
+    block_for_inline = {id(token.children): block for token, block in zip(
+        [token for token in tokens if token.type == "inline" and token.children and not _contains_raw_html(token.children) and _inline_segments(token.children)[0]], blocks)}
     original_render_inline = renderer.renderInline
-    original_paragraph_close = renderer.rules.get("paragraph_close")
+    original_rules = {name: renderer.rules.get(name) for name in ("paragraph_close", "heading_close", "th_close", "td_close")}
 
     def render_inline(children, render_options, env):
-        block = children_lookup.get(id(children))
+        block = block_for_inline.get(id(children))
         if block is None:
             return original_render_inline(children, render_options, env)
         token = type("InlineToken", (), {"children": children})()
-        return _render_annotated_inline(token, by_block.get(block, []), numbers, row_by_index, renderer, render_options, env)
+        return _render_annotated_inline(token, block, by_block.get(block.index, []), numbers, row_by_index, renderer, render_options, env)
 
-    def render_paragraph_close(all_tokens, index, render_options, env):
-        result = original_paragraph_close(all_tokens, index, render_options, env) if original_paragraph_close else "</p>\n"
-        inline = all_tokens[index - 1] if index else None
-        notes = by_block.get(block_lookup.get(id(inline)), []) if inline is not None else []
-        for idx, _, _ in notes:
-            number = numbers[idx]
-            note = _note_html(row_by_index[idx].note_text)
-            result += f'<details class="ann-note" id="note-{number}-narrow"><summary>note {number}</summary><p>{note}</p></details>'
+    close_types = {"paragraph_close", "heading_close", "th_close", "td_close"}
+    token_blocks = {id(token): block.index for token, block in zip(
+        [token for token in tokens if token.type == "inline" and token.children and not _contains_raw_html(token.children) and _inline_segments(token.children)[0]], blocks)}
+    def close_rule(all_tokens, index, render_options, env):
+        token = all_tokens[index - 1] if index else None
+        block_index = token_blocks.get(id(token)) if token is not None and token.type == "inline" else None
+        rule = original_rules[all_tokens[index].type]
+        result = rule(all_tokens, index, render_options, env) if rule else renderer.renderToken(all_tokens, index, render_options, env)
+        for annotation_index, _, _ in by_block.get(block_index, []):
+            number = numbers[annotation_index]
+            note = _note_html(row_by_index[annotation_index].note_text)
+            mode = " ann-note-long" if len(row_by_index[annotation_index].note_text) > 400 else ""
+            result += f'<details class="ann-note{mode}" id="note-{number}-narrow"><summary>note {number}</summary><p>{note}</p></details>'
         return result
 
     renderer.renderInline = render_inline
-    renderer.rules["paragraph_close"] = render_paragraph_close
+    for name in close_types:
+        renderer.rules[name] = close_rule
     try:
         html_output = renderer.render(tokens, options, {})
     finally:
         renderer.renderInline = original_render_inline
-        if original_paragraph_close is None:
-            renderer.rules.pop("paragraph_close", None)
-        else:
-            renderer.rules["paragraph_close"] = original_paragraph_close
+        for name, rule in original_rules.items():
+            if rule is None: renderer.rules.pop(name, None)
+            else: renderer.rules[name] = rule
     return RenderedPost(html_output, resolutions)
 
 

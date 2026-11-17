@@ -432,3 +432,23 @@ def test_real_fixture_edit_preserves_and_orphans_annotations():
     after = resolve("keep\n\nchanged", before)
     assert after[0].status == "resolved"
     assert after[1].reason == "not-found"
+
+
+def test_fallback_details_cover_heading_and_table_cell():
+    body = "# heading\n\n| cell |\n| --- |\n| value |"
+    rows = [row(1, "heading", kind="heading"), row(2, "value", kind="table_cell", index=2)]
+    rendered = render_with_annotations(body, rows).html
+    assert rendered.count('class="ann-note"') == 2
+    assert "</h1>\n<details" in rendered
+
+
+def test_document_order_controls_note_numbers_and_long_notes_stay_visible():
+    rows = [row(9, "upper", index=1), Annotation(2, "sample", Selector("paragraph", 0, "lower"), "x" * 401)]
+    rendered = render_with_annotations("lower\n\nupper", rows).html
+    assert rendered.index('aria-label="note 1"') < rendered.index('aria-label="note 2"')
+    assert "class=\"ann-note ann-note-long\"" in rendered
+
+
+def test_note_newlines_are_preserved_in_both_copies():
+    rendered = render_with_annotations("text", [Annotation(1, "sample", Selector("paragraph", 0, "text"), "one  two\nthree")]).html
+    assert "one  two\nthree" in rendered

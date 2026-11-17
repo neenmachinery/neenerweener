@@ -1545,7 +1545,9 @@ def _get_post_data(slug: str) -> dict | PostRedirect | None:
     rendered = render_post(body)
     if is_file_post and annotation_store is not None:
         try:
-            rendered = render_with_annotations(body, annotation_store.list_for_post(slug)).html
+            rows = annotation_store.list_for_post(slug)
+            if any(result.status == "resolved" for result in resolve(body, rows)):
+                rendered = caption_figures(render_with_annotations(body, rows, md).html)
         except Exception as exc:
             logger.warning("annotation storage unavailable: %s", type(exc).__name__)
             raise HTTPException(503, "posts unavailable") from exc
