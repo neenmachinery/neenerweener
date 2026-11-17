@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
 
 import app
-from annotations import Annotation, AnnotationStore, Selector, _blocks, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
+from annotations import Annotation, AnnotationStore, Selector, _blocks, _markdown, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
 
 
 def row(number, exact, *, kind="paragraph", index=0, prefix="", suffix=""):
@@ -45,8 +45,11 @@ def test_link_annotations_are_valid_and_marker_is_after_link():
 def test_annotated_rendering_is_thread_local():
     body = "one **bold** two"
     rows = [row(1, "bold")]
+    parser = _markdown()
+    original_rules = dict(parser.renderer.rules)
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        outputs = list(pool.map(lambda _: render_with_annotations(body, rows).html, range(200)))
+        outputs = list(pool.map(lambda _: render_with_annotations(body, rows, parser).html, range(200)))
+    assert parser.renderer.rules == original_rules
     assert len(set(outputs)) == 1
     assert all('aria-label="note 1"' in output for output in outputs)
 
@@ -203,7 +206,7 @@ def test_annotation_after_leading_code_marks_exact_selector():
     result = render_with_annotations("`neenerweener` dumb spam account name", [row(1, "dumb spam account name")])
     assert result.resolutions[0].status == "resolved"
     assert '<mark>dumb spam account name</mark>' in result.html
-    assert result.html.index('<sup>') > result.html.index('name</mark>')
+    assert result.html.index('class="ann-ref-wide"') > result.html.index('name</mark>')
 
 
 @pytest.mark.parametrize("body", [

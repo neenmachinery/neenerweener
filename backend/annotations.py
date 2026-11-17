@@ -276,15 +276,20 @@ def _annotation_suffix(number: int, row: Annotation) -> str:
         f'<span class="sidenote" id="note-{number}" role="note">'
         f'<span class="n" aria-hidden="true">{number}</span> {_note_html(row.note_text)}</span>'
     )
-    return f'<sup><a class="ann-ref" href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>{sidenote}'
+    marker = (
+        f'<sup class="ann-ref-wide"><a href="#note-{number}-narrow" aria-label="{label}">{number}</a></sup>'
+        f'<sup class="ann-ref-narrow" aria-hidden="true">{number}</sup>'
+    )
+    return marker + sidenote
 
 
 def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, escaped: bool = False, defer_suffix: bool = False) -> str:
     mark = f'<mark>{text if escaped else html.escape(text, quote=True)}</mark>'
     if not last:
         return mark
-    suffix = "" if defer_suffix else _annotation_suffix(number, row)
-    return f'<span class="ann" id="ann-{number}">{mark}{suffix}</span>'
+    if defer_suffix:
+        return mark
+    return f'<span class="ann" id="ann-{number}">{mark}{_annotation_suffix(number, row)}</span>'
 
 
 def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, options, env) -> str:
@@ -296,14 +301,18 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
 
     pieces = []
     link_depth = 0
-    deferred_suffixes: list[str] = []
+    deferred_suffixes: list[tuple[int, str]] = []
     for child in children:
         if child.type == "link_open":
             link_depth += 1
         elif child.type == "link_close":
             link_depth -= 1
             pieces.append(child)
-            pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for suffix in deferred_suffixes)
+            for annotation_index, suffix in deferred_suffixes:
+                link_start = next(i for i in range(len(pieces) - 1, -1, -1) if getattr(pieces[i], "type", None) == "link_open")
+                number = numbers[annotation_index]
+                pieces.insert(link_start, type("InlineToken", (), {"type": "html_inline", "content": f'<span class="ann" id="ann-{number}">'})())
+                pieces.append(type("InlineToken", (), {"type": "html_inline", "content": suffix + "</span>"})())
             deferred_suffixes.clear()
             continue
         if child.type in {"text", "softbreak", "hardbreak"}:
@@ -332,7 +341,7 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
                         is_last = end - 1 <= current_max
                         defer = is_last and link_depth > 0
                         fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
-                        if defer: deferred_suffixes.append(_annotation_suffix(numbers[current_annotation], rows[current_annotation]))
+                        if defer: deferred_suffixes.append((current_annotation, _annotation_suffix(numbers[current_annotation], rows[current_annotation])))
                     current = []
                     current_max = -1
                 current_annotation = active
@@ -352,11 +361,11 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
                     is_last = end - 1 <= current_max
                     defer = is_last and link_depth > 0
                     fragments.append(_annotation_markup(numbers[current_annotation], rows[current_annotation], content, is_last, escaped=True, defer_suffix=defer))
-                    if defer: deferred_suffixes.append(_annotation_suffix(numbers[current_annotation], rows[current_annotation]))
+                    if defer: deferred_suffixes.append((current_annotation, _annotation_suffix(numbers[current_annotation], rows[current_annotation])))
             child.type = "html_inline"
             child.content = ''.join(fragments)
         pieces.append(child)
-    pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for suffix in deferred_suffixes)
+    pieces.extend(type("InlineToken", (), {"type": "html_inline", "content": suffix})() for _, suffix in deferred_suffixes)
     return renderer.renderInline(pieces, options, env)
 
 
