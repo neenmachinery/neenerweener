@@ -26,7 +26,7 @@ def upgrade():
         sa.CheckConstraint("block_index >= 0", name="post_annotations_index_check"),
         sa.CheckConstraint("length(exact) BETWEEN 1 AND 2000", name="post_annotations_exact_check"),
         sa.CheckConstraint("length(prefix) <= 64 AND length(suffix) <= 64", name="post_annotations_context_check"),
-        sa.CheckConstraint("length(trim(note_text)) BETWEEN 1 AND 2000", name="post_annotations_note_check"),
+        sa.CheckConstraint("length(note_text) BETWEEN 1 AND 2000 AND length(trim(note_text)) >= 1", name="post_annotations_note_check"),
     )
     op.create_index("ix_post_annotations_slug_id", "post_annotations", ["post_slug", "id"])
 

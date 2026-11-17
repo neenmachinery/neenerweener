@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol, Sequence
 
 import sqlalchemy as sa
+from timeline import CONNECT_TIMEOUT_SECONDS, POOL_TIMEOUT_SECONDS, STATEMENT_TIMEOUT_MS, database_engine
 from markdown_it import MarkdownIt
 from mdit_py_plugins.dollarmath import dollarmath_plugin
 from sqlalchemy.engine import Engine
@@ -35,7 +36,7 @@ post_annotations = sa.Table(
     sa.CheckConstraint("block_index >= 0", name="post_annotations_index_check"),
     sa.CheckConstraint("length(exact) BETWEEN 1 AND 2000", name="post_annotations_exact_check"),
     sa.CheckConstraint("length(prefix) <= 64 AND length(suffix) <= 64", name="post_annotations_context_check"),
-    sa.CheckConstraint("length(trim(note_text)) BETWEEN 1 AND 2000", name="post_annotations_note_check"),
+    sa.CheckConstraint("length(note_text) BETWEEN 1 AND 2000 AND length(trim(note_text)) >= 1", name="post_annotations_note_check"),
 )
 sa.Index("ix_post_annotations_slug_id", post_annotations.c.post_slug, post_annotations.c.id)
 
@@ -74,9 +75,8 @@ class RenderedPost:
 class AnnotationStoreProtocol(Protocol):
     def list_for_post(self, slug: str) -> list[Annotation]: ...
     def list_admin(self) -> list[Annotation]: ...
-    def create(self, slug: str, selector: Selector, note_text: str) -> Annotation: ...
+    def create_or_repair(self, slug: str, selector: Selector, note_text: str, body: str, annotation_id: int | None = None) -> Annotation | None: ...
     def update_note(self, annotation_id: int, note_text: str) -> Annotation | None: ...
-    def repair(self, annotation_id: int, slug: str, selector: Selector) -> Annotation | None: ...
     def delete(self, annotation_id: int) -> bool: ...
 
 
@@ -95,8 +95,7 @@ def validate_selector(selector: Selector) -> None:
 def validate_note(note_text: str) -> str:
     if not isinstance(note_text, str) or any(ord(ch) == 0 or 0xD800 <= ord(ch) <= 0xDFFF for ch in note_text):
         raise ValueError("invalid note")
-    note_text = note_text.strip()
-    if not note_text or len(note_text) > MAX_NOTE:
+    if not note_text.strip() or len(note_text) > MAX_NOTE:
         raise ValueError("invalid note")
     return note_text
 
@@ -106,7 +105,7 @@ class _Block:
     kind: str
     index: int
     text: str
-    children: list
+    segments: list[str]
 
 
 def _markdown() -> MarkdownIt:
@@ -137,14 +136,22 @@ def _blocks(body: str):
         else: continue
         if any(c.type in {"code_inline", "html_inline", "math_inline", "image"} for c in token.children):
             continue
+        segments = []
         chars = []
         for child in token.children:
-            if child.type == "text": chars.append(child.content)
-            elif child.type == "softbreak": chars.append(" ")
-            elif child.type == "hardbreak": chars.append(" ")
-        text = re.sub(r"\s+", " ", "".join(chars)).strip()
+            if child.type in {"text", "softbreak", "hardbreak", "strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}:
+                if child.type in {"text", "softbreak", "hardbreak"}: chars.append(" " if child.type != "text" else child.content)
+            else:
+                if chars:
+                    segment = re.sub(r"\s+", " ", "".join(chars)).strip()
+                    if segment: segments.append(segment)
+                    chars = []
+        if chars:
+            segment = re.sub(r"\s+", " ", "".join(chars)).strip()
+            if segment: segments.append(segment)
+        text = " ".join(segments)
         if text:
-            blocks.append(_Block(kind, index, text, token.children))
+            blocks.append(_Block(kind, index, text, segments))
             index += 1
     return tokens, blocks
 
@@ -157,15 +164,16 @@ def resolve(body: str, rows: Sequence[Annotation]) -> tuple[Resolution, ...]:
         candidates = []
         for block in blocks:
             if block.kind != selector.block_kind: continue
-            start = 0
-            while True:
-                at = block.text.find(selector.exact, start)
-                if at < 0: break
-                before = block.text[max(0, at-len(selector.prefix)):at]
-                after = block.text[at+len(selector.exact):at+len(selector.exact)+len(selector.suffix)]
-                score = (before == selector.prefix, after == selector.suffix, block.index == selector.block_index)
-                candidates.append((score, block, at, at + len(selector.exact)))
-                start = at + 1
+            for segment in block.segments:
+                start = 0
+                while True:
+                    at = segment.find(selector.exact, start)
+                    if at < 0: break
+                    before = segment[max(0, at-len(selector.prefix)):at]
+                    after = segment[at+len(selector.exact):at+len(selector.exact)+len(selector.suffix)]
+                    score = (before == selector.prefix, after == selector.suffix, block.index == selector.block_index)
+                    candidates.append((score, block, at, at + len(selector.exact)))
+                    start = at + 1
         if not candidates:
             results.append(Resolution(row.id, None, None, "orphaned", "not-found")); continue
         if len(candidates) > 1:
@@ -176,12 +184,15 @@ def resolve(body: str, rows: Sequence[Annotation]) -> tuple[Resolution, ...]:
         else:
             best = candidates[0]
         results.append(Resolution(row.id, best[2], best[3], "resolved", block_index=best[1].index))
+    conflicts = set()
     for i, left in enumerate(results):
         if left.status != "resolved": continue
-        for right in results[i+1:]:
+        for j, right in enumerate(results[i + 1:], i + 1):
             if right.status == "resolved" and left.block_index == right.block_index and left.start < right.end and right.start < left.end:
-                results[i] = Resolution(left.annotation_id, None, None, "orphaned", "overlap")
-                j = results.index(right); results[j] = Resolution(right.annotation_id, None, None, "orphaned", "overlap")
+                conflicts.update((i, j))
+    for i in conflicts:
+        row = results[i]
+        results[i] = Resolution(row.annotation_id, None, None, "orphaned", "overlap")
     return tuple(results)
 
 
@@ -194,27 +205,48 @@ def render_with_annotations(body_markdown: str, rows: Sequence[Annotation]) -> R
 
 class AnnotationStore:
     def __init__(self, database_url: str, *, engine: Engine | None = None):
-        self.engine = engine or sa.create_engine(database_url)
+        if engine is not None:
+            self.engine = engine
+        else:
+            options = {"pool_pre_ping": True, "pool_timeout": POOL_TIMEOUT_SECONDS}
+            if database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+                options["connect_args"] = {"connect_timeout": CONNECT_TIMEOUT_SECONDS, "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"}
+            self.engine = database_engine(database_url, **options)
     def close(self): self.engine.dispose()
     def _rows(self, query):
-        with self.engine.begin() as connection: return [self._row(r) for r in connection.execute(query).mappings()]
+        with self.engine.connect() as connection: return [self._row(r) for r in connection.execute(query).mappings()]
     @staticmethod
     def _row(row):
         return Annotation(row["id"], row["post_slug"], Selector(row["block_kind"], row["block_index"], row["exact"], row["prefix"], row["suffix"]), row["note_text"], row["created_at"], row["updated_at"])
     def list_for_post(self, slug): return self._rows(sa.select(post_annotations).where(post_annotations.c.post_slug == slug).order_by(post_annotations.c.id))
     def list_admin(self): return self._rows(sa.select(post_annotations).order_by(post_annotations.c.post_slug, post_annotations.c.id))
-    def create(self, slug, selector, note_text):
+    def _lock(self, connection, slug):
+        if connection.dialect.name == "postgresql": connection.execute(sa.select(sa.func.pg_advisory_xact_lock(sa.func.hashtextextended(slug, 0))))
+    def create_or_repair(self, slug, selector, note_text, body, annotation_id=None):
         validate_selector(selector); note_text = validate_note(note_text)
-        with self.engine.begin() as c: return self._row(c.execute(sa.insert(post_annotations).values(post_slug=slug, block_kind=selector.block_kind, block_index=selector.block_index, exact=selector.exact, prefix=selector.prefix, suffix=selector.suffix, note_text=note_text).returning(post_annotations)).mappings().one())
+        candidate = Annotation(annotation_id or 0, slug, selector, note_text)
+        with self.engine.begin() as c:
+            self._lock(c, slug)
+            existing = [self._row(r) for r in c.execute(sa.select(post_annotations).where(post_annotations.c.post_slug == slug).order_by(post_annotations.c.id)).mappings()]
+            if annotation_id is not None and not any(row.id == annotation_id for row in existing): return None
+            if annotation_id is not None:
+                current = next(row for row in existing if row.id == annotation_id)
+                candidate = Annotation(annotation_id, slug, selector, current.note_text)
+            rows = [candidate if annotation_id is not None and row.id == annotation_id else row for row in existing]
+            if annotation_id is None: rows.append(candidate)
+            outcome = resolve(body, rows)
+            result = outcome[-1] if annotation_id is None else outcome[next(i for i, row in enumerate(existing) if row.id == annotation_id)]
+            if result.status != "resolved": raise ValueError(result.reason or "invalid")
+            values = dict(post_slug=slug, block_kind=selector.block_kind, block_index=selector.block_index, exact=selector.exact, prefix=selector.prefix, suffix=selector.suffix)
+            if annotation_id is None:
+                values["note_text"] = note_text
+                return self._row(c.execute(sa.insert(post_annotations).values(**values).returning(post_annotations)).mappings().one())
+            row = c.execute(sa.update(post_annotations).where(post_annotations.c.id == annotation_id).values(**{**values, "updated_at": sa.func.now()}).returning(post_annotations)).mappings().first()
+            return self._row(row) if row else None
     def update_note(self, annotation_id, note_text):
         note_text = validate_note(note_text)
         with self.engine.begin() as c:
             row = c.execute(sa.update(post_annotations).where(post_annotations.c.id == annotation_id).values(note_text=note_text, updated_at=sa.func.now()).returning(post_annotations)).mappings().first()
-            return self._row(row) if row else None
-    def repair(self, annotation_id, slug, selector):
-        validate_selector(selector)
-        with self.engine.begin() as c:
-            row = c.execute(sa.update(post_annotations).where(post_annotations.c.id == annotation_id).values(post_slug=slug, block_kind=selector.block_kind, block_index=selector.block_index, exact=selector.exact, prefix=selector.prefix, suffix=selector.suffix, updated_at=sa.func.now()).returning(post_annotations)).mappings().first()
             return self._row(row) if row else None
     def delete(self, annotation_id):
         with self.engine.begin() as c: return c.execute(sa.delete(post_annotations).where(post_annotations.c.id == annotation_id)).rowcount > 0

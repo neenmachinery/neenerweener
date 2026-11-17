@@ -21,6 +21,20 @@ def test_changed_and_ambiguous_quotes_are_orphaned():
     assert resolve("same\n\nsame", [row(1, "same")])[0].reason == "ambiguous"
 
 
+def test_overlap_chains_mark_every_conflicting_row_from_immutable_ranges():
+    rows = [row(1, "ab"), row(2, "bcd"), row(3, "de")]
+    assert [result.reason for result in resolve("abcde", rows)] == ["overlap", "overlap", "overlap"]
+
+
+def test_note_validation_preserves_surrounding_whitespace():
+    assert validate_note("  a note  ") == "  a note  "
+    try:
+        validate_note("a" * 2001)
+        assert False
+    except ValueError:
+        pass
+
+
 def test_cross_unsupported_content_is_not_eligible():
     body = "`code`\n\n$$x$$\n\n<div>raw</div>\n\ntext"
     assert all(r.status == "orphaned" for r in resolve(body, [row(1, "code"), row(2, "x"), row(3, "raw"), row(4, "text", index=0)]))

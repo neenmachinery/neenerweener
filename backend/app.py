@@ -32,7 +32,7 @@ from pygments.util import ClassNotFound
 from anchors import add_heading_anchors
 from agent_commons import AgentCommonsStore, AgentPrincipal, DuplicateRegistration, InvalidProof as AgentInvalidProof, Throttled as AgentThrottled, public_agent, AGENT_SCOPES, CHALLENGE_SECONDS as AGENT_CHALLENGE_SECONDS, TOKEN_SECONDS as AGENT_TOKEN_SECONDS, WritesPaused
 from canvas import CanvasStore, authorize_canvas_write, png_bytes, snapshot_payload
-from annotations import Annotation, AnnotationStore, AnnotationStoreProtocol, Selector, render_with_annotations, resolve, validate_note, validate_selector
+from annotations import Annotation, AnnotationStore, AnnotationStoreProtocol, Resolution, Selector, render_with_annotations, resolve, validate_selector
 from forum import ForumStore
 from moderation import ModerationStore
 from operations import check_readiness, configure_logging, load_schema_heads
@@ -1594,58 +1594,77 @@ def _file_post(slug: str) -> dict:
     return post
 
 
-def _annotation_json(row: Annotation, body: str) -> dict:
+def _annotation_json(row: Annotation, body: str, resolution=None) -> dict:
     selector = row.selector
-    resolution = resolve(body, [row])[0]
+    resolution = resolution or resolve(body, [row])[0]
     return {"id": row.id, "post_slug": row.post_slug, "selector": {"block_kind": selector.block_kind, "block_index": selector.block_index, "exact": selector.exact, "prefix": selector.prefix, "suffix": selector.suffix}, "note_text": row.note_text, "created_at": row.created_at.isoformat() if row.created_at else None, "updated_at": row.updated_at.isoformat() if row.updated_at else None, "status": resolution.status, "reason": resolution.reason}
+
+
+def _annotation_error(exc: ValueError) -> HTTPException:
+    return HTTPException(422, {"not-found": "selection is not annotatable", "ambiguous": "selection is ambiguous", "overlap": "annotation overlaps another annotation"}.get(str(exc), "invalid request"))
 
 
 @app.get("/api/admin/annotations")
 def list_admin_annotations(slug: str | None = None, _access: Access = Depends(require_browser_read)):
-    rows = _annotation_storage().list_for_post(slug) if slug is not None else _annotation_storage().list_admin()
-    result = []
-    for row in rows:
-        try:
-            result.append(_annotation_json(row, _file_post(row.post_slug)["body"]))
-        except HTTPException as exc:
-            if exc.status_code != 404: raise
-            result.append({"id": row.id, "post_slug": row.post_slug, "selector": {"block_kind": row.selector.block_kind, "block_index": row.selector.block_index, "exact": row.selector.exact, "prefix": row.selector.prefix, "suffix": row.selector.suffix}, "note_text": row.note_text, "created_at": row.created_at.isoformat() if row.created_at else None, "updated_at": row.updated_at.isoformat() if row.updated_at else None, "status": "orphaned", "reason": "missing-post"})
-    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    try:
+        rows = _annotation_storage().list_for_post(slug) if slug is not None else _annotation_storage().list_admin()
+        grouped = {}
+        for row in rows: grouped.setdefault(row.post_slug, []).append(row)
+        result = []
+        for post_slug, group in grouped.items():
+            try: body = _file_post(post_slug)["body"]
+            except HTTPException as exc:
+                if exc.status_code != 404: raise
+                result.extend(_annotation_json(row, "", Resolution(row.id, None, None, "orphaned", "missing-post")) for row in group)
+            else:
+                result.extend(_annotation_json(row, body, resolution) for row, resolution in zip(group, resolve(body, group)))
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except HTTPException: raise
+    except Exception as exc:
+        logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "admin unavailable") from exc
 
 @app.post("/api/admin/annotations", status_code=201)
 async def create_admin_annotation(request: Request, _access: Access = Depends(require_browser_mutation)):
     payload = await _bounded_json(request, AnnotationCreateRequest)
-    post = _file_post(payload.post_slug)
+    post = await asyncio.to_thread(_file_post, payload.post_slug)
     selector = _selector(payload.selector)
-    try: note = validate_note(payload.note_text)
-    except ValueError as exc: raise HTTPException(422, "invalid request") from exc
-    candidate = Annotation(0, payload.post_slug, selector, note)
-    if resolve(post["body"], [candidate])[0].status != "resolved": raise HTTPException(422, "invalid request")
-    existing = _annotation_storage().list_for_post(payload.post_slug)
-    if any(item.reason == "overlap" for item in resolve(post["body"], [candidate, *existing])[1:]): raise HTTPException(422, "invalid request")
-    row = _annotation_storage().create(payload.post_slug, selector, note)
+    try: row = await asyncio.to_thread(_annotation_storage().create_or_repair, payload.post_slug, selector, payload.note_text, post["body"])
+    except ValueError as exc: raise _annotation_error(exc) from exc
+    except HTTPException: raise
+    except Exception as exc:
+        logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "admin unavailable") from exc
     return _annotation_json(row, post["body"])
 
 @app.patch("/api/admin/annotations/{annotation_id}")
 async def update_admin_annotation(annotation_id: PositiveInt, request: Request, _access: Access = Depends(require_browser_mutation)):
     payload = await _bounded_json(request, AnnotationNoteRequest)
-    try: row = _annotation_storage().update_note(annotation_id, payload.note_text)
+    try: row = await asyncio.to_thread(_annotation_storage().update_note, annotation_id, payload.note_text)
     except ValueError as exc: raise HTTPException(422, "invalid request") from exc
+    except Exception as exc:
+        logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "admin unavailable") from exc
     if row is None: raise HTTPException(404, "annotation not found")
-    return _annotation_json(row, _file_post(row.post_slug)["body"])
+    try: body = (await asyncio.to_thread(_file_post, row.post_slug))["body"]
+    except HTTPException as exc:
+        if exc.status_code != 404: raise
+        return _annotation_json(row, "", Resolution(row.id, None, None, "orphaned", "missing-post"))
+    return _annotation_json(row, body)
 
 @app.put("/api/admin/annotations/{annotation_id}/anchor")
 async def repair_admin_annotation(annotation_id: PositiveInt, request: Request, _access: Access = Depends(require_browser_mutation)):
     payload = await _bounded_json(request, AnnotationRepairRequest)
-    post = _file_post(payload.post_slug)
+    post = await asyncio.to_thread(_file_post, payload.post_slug)
     selector = _selector(payload.selector)
-    candidate = Annotation(annotation_id, payload.post_slug, selector, "x")
-    if resolve(post["body"], [candidate])[0].status != "resolved": raise HTTPException(422, "invalid request")
-    existing = [item for item in _annotation_storage().list_for_post(payload.post_slug) if item.id != annotation_id]
-    if any(item.reason == "overlap" for item in resolve(post["body"], [candidate, *existing])[1:]): raise HTTPException(422, "invalid request")
-    row = _annotation_storage().repair(annotation_id, payload.post_slug, selector)
+    try: row = await asyncio.to_thread(_annotation_storage().create_or_repair, payload.post_slug, selector, "", post["body"], annotation_id)
+    except ValueError as exc: raise _annotation_error(exc) from exc
+    except Exception as exc:
+        logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+        raise HTTPException(503, "admin unavailable") from exc
     if row is None: raise HTTPException(404, "annotation not found")
     return _annotation_json(row, post["body"])
+
 
 @app.delete("/api/admin/annotations/{annotation_id}", status_code=204)
 def delete_admin_annotation(annotation_id: PositiveInt, _access: Access = Depends(require_browser_mutation)):
