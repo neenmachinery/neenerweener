@@ -99,17 +99,27 @@ def test_context_uses_canonical_text_but_selection_stays_segment_local():
     ("*alpha <i>inside</i> omega*", "inside", ("alpha", "omega")),
     ("[alpha <i>inside</i> omega](x)", "inside", ("alpha", "omega")),
 ])
-def test_inline_raw_html_subtrees_are_not_selectable(body, inside, outside):
-    _, blocks = _blocks(body)
-    if not blocks:
-        assert not outside
-        assert resolve(body, [row(1, inside)])[0].reason == "not-found"
-        return
-    block = blocks[0]
-    assert all(block.text[start:start + len(segment)] == segment for segment, start in block.segments)
-    assert resolve(body, [row(1, inside)])[0].reason == "not-found"
-    for number, text_value in enumerate(outside, 2):
-        assert resolve(body, [row(number, text_value)])[0].status == "resolved"
+def test_inline_raw_html_makes_the_entire_block_not_annotatable(body, inside, outside):
+    assert _blocks(body)[1] == []
+    for number, text_value in enumerate((inside, *outside), 1):
+        assert resolve(body, [row(number, text_value)])[0].reason == "not-found"
+
+
+@pytest.mark.parametrize("body", [
+    "alpha <div>one <div>two</div> three</div> omega",
+    'alpha <span title="a > b">inside</span> omega',
+    "alpha <!-- hidden --> omega",
+    "alpha <br> omega",
+    "alpha <i>inside",
+])
+def test_inline_raw_html_blocks_refuse_every_selection(body):
+    for text_value in ("alpha", "inside", "omega", "one", "two", "three", "hidden"):
+        assert resolve(body, [row(1, text_value)])[0].reason == "not-found"
+
+
+def test_autolinks_are_not_raw_html_and_keep_surrounding_text_annotatable():
+    body = "alpha <https://example.com> omega"
+    assert [result.status for result in resolve(body, [row(1, "alpha"), row(2, "omega")])] == ["resolved", "resolved"]
 
 
 @pytest.mark.parametrize("seed", range(10))

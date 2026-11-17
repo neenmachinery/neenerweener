@@ -116,10 +116,6 @@ def _markdown() -> MarkdownIt:
 
 
 _FORMATTING = {"strong_open", "strong_close", "em_open", "em_close", "s_open", "s_close", "link_open", "link_close"}
-_VOID_HTML_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
-_HTML_CLOSE = re.compile(r"^</\s*([A-Za-z][\w:-]*)\s*>")
-_HTML_OPEN = re.compile(r"^<\s*([A-Za-z][\w:-]*)(?:\s[^>]*)?>$")
-_HTML_SELF_CLOSING = re.compile(r"^<\s*([A-Za-z][\w:-]*)(?:\s[^>]*)?/\s*>")
 
 
 def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
@@ -127,7 +123,6 @@ def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
     segments: list[tuple[str, int]] = []
     run: list[str] = []
     cursor = 0
-    html_stack: list[str] = []
 
     def flush() -> None:
         nonlocal cursor
@@ -143,26 +138,7 @@ def _inline_segments(children) -> tuple[str, list[tuple[str, int]]]:
 
     for child in children:
         if child.type in {"text", "softbreak", "hardbreak"}:
-            if not html_stack:
-                run.append(" " if child.type != "text" else child.content)
-        elif child.type == "html_inline":
-            flush()
-            run.clear()
-            content = child.content
-            if content.startswith("<!--"):
-                continue
-            closing = _HTML_CLOSE.match(content)
-            if closing:
-                name = closing.group(1).lower()
-                if name in html_stack:
-                    del html_stack[html_stack.index(name):]
-                continue
-            self_closing = _HTML_SELF_CLOSING.match(content)
-            if self_closing:
-                continue
-            opening = _HTML_OPEN.match(content)
-            if opening and opening.group(1).lower() not in _VOID_HTML_TAGS:
-                html_stack.append(opening.group(1).lower())
+            run.append(" " if child.type != "text" else child.content)
         elif child.type in _FORMATTING:
             continue
         else:
@@ -206,6 +182,8 @@ def _blocks(body: str):
             continue
         kind = _block_kind(tokens[pos - 1].type if pos else "", stack)
         if kind is None:
+            continue
+        if any(child.type == "html_inline" for child in token.children):
             continue
         text, segments = _inline_segments(token.children)
         if text:
