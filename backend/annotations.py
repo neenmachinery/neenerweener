@@ -380,14 +380,17 @@ def _render_annotated_inline(token, block, ranges, numbers, rows, renderer, opti
     return renderer.renderInline(_inline_plan(token, block, ranges, numbers, rows), options, env)
 
 
-def _render_resolved(tokens, blocks, resolutions, rows, parser):
+def _annotation_context(resolutions, rows):
     resolved = [(i, row, result) for i, (row, result) in enumerate(zip(rows, resolutions)) if result.status == "resolved"]
     resolved.sort(key=lambda item: (item[2].block_index, item[2].start, item[0]))
     by_block = {}
     for i, _, result in resolved:
         by_block.setdefault(result.block_index, []).append((i, result.start or 0, result.end or 0))
-    numbers = {i: n for n, (i, _, _) in enumerate(resolved, 1)}
-    row_by_index = {i: row for i, row, _ in resolved}
+    return by_block, {i: n for n, (i, _, _) in enumerate(resolved, 1)}, {i: row for i, row, _ in resolved}
+
+
+def _render_resolved(tokens, blocks, resolutions, rows, parser):
+    by_block, numbers, row_by_index = _annotation_context(resolutions, rows)
     renderer = copy.copy(parser.renderer)
     renderer.rules = dict(parser.renderer.rules)
     inline_tokens = [t for t in tokens if t.type == "inline" and t.children and not _contains_raw_html(t.children) and _inline_segments(t.children)[0]]
