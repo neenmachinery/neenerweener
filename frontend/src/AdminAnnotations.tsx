@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import type { Annotation } from "./adminApi";
 import { Button } from "./EntryEditor";
 import type { AdminPageProps } from "./adminPages";
+import { fetchWithSignal } from "./request";
 import { useRequest } from "./useRequest";
 
 type Post = { slug: string; title: string };
 export default function AdminAnnotations({ send, active, expire }: AdminPageProps) {
   const [rows, setRows] = useState<Annotation[]>([]); const [posts, setPosts] = useState<Post[]>([]); const [error, setError] = useState(""); const { run } = useRequest("load");
-  const load = async () => { const r = await run(async (signal) => { const annotations = await send<Annotation[]>("GET", "/api/admin/annotations", undefined, signal); if (!annotations.ok) return annotations; const response = await fetch("/api/posts", { signal }); return response.ok ? { ok: true as const, data: { annotations: annotations.data, posts: await response.json() as Post[] } } : { ok: false as const, status: response.status, message: "could not load posts" }; }); if (r.ok) { setRows(r.data.annotations); setPosts(r.data.posts); setError(""); } else if (r.status === 401) expire(); else setError(r.message); };
+  const load = async () => { const r = await run(async (signal) => { const annotations = await send<Annotation[]>("GET", "/api/admin/annotations", undefined, signal); if (!annotations.ok) return annotations; const response = await fetchWithSignal("/api/posts", signal); return response.ok ? { ok: true as const, data: { annotations: annotations.data, posts: await response.json() as Post[] } } : { ok: false as const, status: response.status, message: "could not load posts" }; }); if (r.ok) { setRows(r.data.annotations); setPosts(r.data.posts); setError(""); } else if (r.status === 401) expire(); else setError(r.message); };
   useEffect(() => { if (active) void load(); }, [active]);
   const ordered = [...rows].sort((a, b) => Number(b.status !== "resolved") - Number(a.status !== "resolved") || a.post_slug.localeCompare(b.post_slug) || a.id - b.id);
   return <><h1 tabIndex={-1}>annotations</h1>{error && <p className="error" role="alert">{error}</p>}<ul className="admin-links">{ordered.map((a) => <Row key={a.id} annotation={a} posts={posts} send={send} expire={expire} onChanged={load} />)}</ul></>;
