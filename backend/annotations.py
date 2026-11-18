@@ -111,6 +111,7 @@ class _Block:
     segments: list[tuple[str, int]]
     # one entry per canonical character: (inline child, raw character index), or None
     positions: list[tuple[object, int] | None]
+    inline_token: object
 
 
 def _markdown() -> MarkdownIt:
@@ -206,7 +207,7 @@ def _block_from_token(token, parent, stack, index):
     if kind is None:
         return None
     text, segments, positions = _inline_map(token.children)
-    return _Block(kind, index, text, segments, positions) if text else None
+    return _Block(kind, index, text, segments, positions, token) if text else None
 
 
 def _blocks(body: str, *, heading_anchors: bool = False, parser: MarkdownIt | None = None):
@@ -394,9 +395,9 @@ def _render_resolved(tokens, blocks, resolutions, rows, parser):
     by_block, numbers, row_by_index = _annotation_context(resolutions, rows)
     renderer = copy.copy(parser.renderer)
     renderer.rules = dict(parser.renderer.rules)
-    inline_tokens = [t for t in tokens if t.type == "inline" and t.children and not _contains_raw_html(t.children) and _inline_segments(t.children)[0]]
-    block_for_inline = {id(t.children): block for t, block in zip(inline_tokens, blocks)}
-    token_blocks = {id(t): block.index for t, block in zip(inline_tokens, blocks)}
+    inline_blocks = [(block.inline_token, block) for block in blocks]
+    block_for_inline = {id(token.children): block for token, block in inline_blocks}
+    token_blocks = {id(token): block.index for token, block in inline_blocks}
     original_render_inline = renderer.renderInline
     original_rules = {name: renderer.rules.get(name) for name in ("paragraph_close", "heading_close", "th_close", "td_close")}
 

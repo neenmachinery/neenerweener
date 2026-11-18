@@ -214,6 +214,40 @@ def test_resolved_note_is_rendered_for_readers():
     assert "a note" in result.html
 
 
+def test_annotation_after_table_marks_exact_text_and_keeps_details_out_of_table():
+    body = "| left | right |\n| --- | --- |\n| cell | value |\n\nmarked paragraph"
+    result = render_with_annotations(body, [row(1, "marked paragraph")])
+    parser = html5lib.HTMLParser(strict=False)
+    parser.parseFragment(result.html)
+    assert parser.errors == []
+    assert result.html.count("<mark>marked paragraph</mark>") == 1
+    assert result.html.count('<span class="sidenote"') == 1
+    assert result.html.count('<details class="ann-note"') == 1
+    assert result.html.index("</table>") < result.html.index('<details class="ann-note"')
+
+
+@pytest.mark.parametrize("body", [
+    "<div>not annotatable</div>\n\nmarked paragraph",
+    "```python\ncode\n```\n\nmarked paragraph",
+    "- list item\n\nmarked paragraph",
+    "# heading\n\nmarked paragraph",
+    "> quoted\n\nmarked paragraph",
+    "| left | right |\n| --- | --- |\n| cell | value |\n\nmarked paragraph",
+])
+def test_annotation_marks_exact_text_after_mixed_block_kinds(body):
+    import re
+    import html as html_module
+
+    result = render_with_annotations(body, [row(1, "marked paragraph")])
+    parser = html5lib.HTMLParser(strict=False)
+    parser.parseFragment(result.html)
+    assert parser.errors == []
+    marked = [html_module.unescape(value) for value in re.findall(r"<mark>(.*?)</mark>", result.html)]
+    assert marked == ["marked paragraph"]
+    assert result.html.count('<span class="sidenote"') == 1
+    assert result.html.count('<details class="ann-note"') == 1
+
+
 def test_annotation_after_leading_code_marks_exact_selector():
     result = render_with_annotations("`neenerweener` dumb spam account name", [row(1, "dumb spam account name")])
     assert result.resolutions[0].status == "resolved"
