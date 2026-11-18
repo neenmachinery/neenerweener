@@ -2040,6 +2040,9 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
   .ann-note.ann-note-long { display: block; }
   main:has(.sidenote) .back { right: auto; left: -2rem; width: 1.5rem; margin-right: 0; text-align: center; z-index: 1; }
 }
+@media (min-width: 1040px) and (max-width: 1060px) {
+  main:has(.sidenote) { padding-left: 2rem; padding-right: .5rem; }
+}
 @media (max-width: 1039px) {
   .ann-ref-wide { display: none; }
   .ann-ref-narrow { display: inline; }
