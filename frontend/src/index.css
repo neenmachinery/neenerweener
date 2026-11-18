@@ -2052,3 +2052,5 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
 .annotation-editor textarea { width: 100%; min-height: 5rem; }
 .annotation-editor > div { display: flex; gap: .5rem; margin-top: .5rem; }
 .annotation-admin { display: inline-flex; gap: .35rem; margin-left: .5rem; }
+.sidenote > .annotation-admin { grid-column: 2; margin: .35rem 0 0; }
+.ann-note > .annotation-admin { margin: .5rem 0 0; }

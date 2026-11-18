@@ -56,6 +56,12 @@ it("uses range offsets for the second repeated phrase", () => {
   expect(selectedAnchor(root)).toMatchObject({ block_text: "same x same y", start: 7, end: 11 });
 });
 
+it("excludes rendered annotation controls from the dom payload", () => {
+  const root = article('<p><span class="ann"><mark>before</mark><sup class="ann-ref-wide">1</sup><span class="sidenote">note text</span></span> selected after</p>');
+  const text = root.querySelector("p")!.lastChild!; select(text, 1, text, 9);
+  expect(selectedAnchor(root)).toMatchObject({ block_text: "before selected after", start: 7, end: 15 });
+});
+
 it("refuses a selection across two blocks", () => {
   const root = article("<p>first</p><p>second</p>"); select(root.firstElementChild!.firstChild!, 0, root.lastElementChild!.firstChild!, 6);
   expect(selectedAnchor(root)).toBeNull();
@@ -72,7 +78,7 @@ it("drops a double submit", async () => {
 it("a newer load supersedes the old load", async () => {
   const replies: ((value: Awaited<ReturnType<typeof ok<Annotation[]>>>) => void)[] = []; const signals: AbortSignal[] = [];
   api.list.mockImplementation((_slug, signal) => new Promise((resolve) => { replies.push(resolve); signals.push(signal); }));
-  const root = article(); const host = document.createElement("div"); document.body.append(host); reactRoot = createRoot(host);
+  const root = article('<p><span class="ann" data-annotation-id="9"><span class="sidenote"></span></span></p>'); const host = document.createElement("div"); document.body.append(host); reactRoot = createRoot(host);
   await act(async () => reactRoot!.render(<PostAnnotationAdmin root={root} slug="first" expire={vi.fn()} onChanged={() => Promise.resolve()} />));
   await act(async () => reactRoot!.render(<PostAnnotationAdmin root={root} slug="second" expire={vi.fn()} onChanged={() => Promise.resolve()} />));
   expect(signals[0].aborted).toBe(true); await act(async () => replies[1](await ok([row({ id: 9 })]))); expect([...document.querySelectorAll("button")].filter((item) => item.textContent?.startsWith("edit"))).toHaveLength(1);
@@ -90,7 +96,7 @@ it.each(["selection is not annotatable", "selection is ambiguous", "annotation o
 });
 
 it("uses two-step delete", async () => {
-  api.list.mockImplementation(() => ok([row()])); await render(); click("delete"); expect(api.remove).not.toHaveBeenCalled(); click("confirm delete"); await settle(); expect(api.remove).toHaveBeenCalledTimes(1);
+  api.list.mockImplementation(() => ok([row()])); await render(article('<p><span class="ann" data-annotation-id="7"><span class="sidenote"></span></span></p>')); click("delete"); expect(api.remove).not.toHaveBeenCalled(); click("confirm delete"); await settle(); expect(api.remove).toHaveBeenCalledTimes(1);
 });
 
 it("repairs with put semantics, keeps the note, and never creates", async () => {

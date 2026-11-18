@@ -327,7 +327,7 @@ def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, e
         return mark
     if defer_suffix:
         return mark
-    return f'<span class="ann" id="ann-{number}">{mark}{_annotation_suffix(number, row)}</span>'
+    return f'<span class="ann" id="ann-{number}" data-annotation-id="{row.id}">{mark}{_annotation_suffix(number, row)}</span>'
 
 
 def _token(type_: str, content: str):
@@ -382,9 +382,9 @@ def _source_map(block):
     return result
 
 
-def _close_inline_link(pieces, deferred, numbers, start):
+def _close_inline_link(pieces, deferred, numbers, rows, start):
     for index, suffix in deferred:
-        pieces.insert(start, _token("html_inline", f'<span class="ann" id="ann-{numbers[index]}">'))
+        pieces.insert(start, _token("html_inline", f'<span class="ann" id="ann-{numbers[index]}" data-annotation-id="{rows[index].id}">'))
         pieces.append(_token("html_inline", suffix + "</span>"))
     deferred.clear()
 
@@ -399,7 +399,7 @@ def _inline_plan(token, block, ranges, numbers, rows):
         elif child.type == "link_close":
             link_depth -= 1
             pieces.append(child)
-            _close_inline_link(pieces, deferred, numbers, link_starts.pop())
+            _close_inline_link(pieces, deferred, numbers, rows, link_starts.pop())
         elif child.type in {"softbreak", "hardbreak"}:
             active = _active_at(next(iter(by_source.get((id(child), -1), [])), None), ranges)
             if active is not None:
@@ -452,7 +452,7 @@ def _render_resolved(tokens, blocks, resolutions, rows, parser):
             number = numbers[annotation_index]
             row = row_by_index[annotation_index]
             mode = " ann-note-long" if len(row.note_text) > 400 else ""
-            result += f'<details class="ann-note{mode}" id="note-{number}-narrow"><summary>note {number}</summary><p>{_note_html(row.note_text)}</p></details>'
+            result += f'<details class="ann-note{mode}" id="note-{number}-narrow" data-annotation-id="{row.id}"><summary>note {number}</summary><p>{_note_html(row.note_text)}</p></details>'
         return result
 
     renderer.renderInline = render_inline
