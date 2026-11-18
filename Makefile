@@ -22,7 +22,7 @@ chunk-guard:
 	test -n "$$entry" || { echo "no module script in frontend/dist/index.html"; exit 1; }; \
 	if grep -oE 'agents|agent writes|pause writes|resume writes|clear canvas|confirm action|api/admin/agents|api/admin/writes|api/admin/forum|tweet|new timeline entry|overview|sign in|new entry|log out|1 entry|api/admin/overview|choose picture|replace picture|remove picture|save profile|profile saved|display name|profile picture|api/admin/profile|save draft|unpublish|discard unsaved changes|api/admin/posts|api/admin/annotations|selection is not annotatable|annotate|allow-scripts|move earlier|ween-block|attach images|up to 4 images|edit entry|delete entry|confirm delete|X-CSRF-Token|csrf_token|from"\./(TimelineComposer|adminApi|EntryEditor)-|["'"'"'`](saved|deleted)["'"'"'`]' "frontend/dist/$$entry"; then \
 	  echo "frontend/dist/$$entry carries admin code"; exit 1; fi; \
-	for page in AdminOverview AdminTimeline AdminPosts AdminProfile AdminAgents AnnotationAdmin; do \
+	for page in AdminOverview AdminTimeline AdminPosts AdminProfile AdminAgents AdminAnnotations PostAnnotationAdmin; do \
 	  ls frontend/dist/assets/$$page-*.js >/dev/null 2>&1 || { echo "no lazy chunk for $$page"; exit 1; }; done; \
 	echo "chunk-guard: frontend/dist/$$entry is clean"
 

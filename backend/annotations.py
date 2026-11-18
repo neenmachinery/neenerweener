@@ -223,6 +223,41 @@ def _blocks(body: str, *, heading_anchors: bool = False, parser: MarkdownIt | No
     return tokens, blocks
 
 
+def _raw_map(text: str) -> tuple[str, list[int]]:
+    """normalize DOM textContent and map every raw boundary to a canonical offset."""
+    out, boundaries = [], [0] * (len(text) + 1)
+    pending = False
+    for index, char in enumerate(text):
+        if char.isspace():
+            boundaries[index] = len(out); pending = bool(out)
+        else:
+            if pending and out: out.append(" ")
+            boundaries[index] = len(out)
+            out.append(char); pending = False
+        boundaries[index + 1] = len(out)
+    if out and out[-1] == " ":
+        out.pop()
+        boundaries = [min(value, len(out)) for value in boundaries]
+    return "".join(out), boundaries
+
+
+def selector_from_dom(body: str, block_text: str, start: int, end: int, block_kind: str, block_index_hint: int) -> Selector:
+    if not isinstance(block_text, str) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
+        raise ValueError("not-found")
+    _, blocks = _blocks(body)
+    raw, offsets = _raw_map(block_text)
+    candidates = [block for block in blocks if block.kind == block_kind and block.text == raw]
+    if not candidates:
+        raise ValueError("not-found")
+    block = next((item for item in candidates if item.index == block_index_hint), candidates[0])
+    if start >= len(offsets) or end >= len(offsets): raise ValueError("not-found")
+    left = offsets[start]
+    right = offsets[end]
+    if right > len(raw) or raw[left:right].strip() == "": raise ValueError("not-found")
+    exact = raw[left:right]
+    return Selector(block.kind, block.index, exact, block.text[max(0, left - MAX_CONTEXT):left], block.text[right:right + MAX_CONTEXT])
+
+
 def _candidates(blocks, selector):
     candidates = []
     for block in blocks:

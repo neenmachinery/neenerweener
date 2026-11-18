@@ -48,7 +48,7 @@ export function PostAnnotationAdmin({ root, slug, onChanged, expire }: { root: H
   }, [root]);
   const save = async () => {
     if (!selector || !note.trim()) return;
-    const r = await run((signal) => editing ? (editing.status === "resolved" ? updateAnnotation(editing.id, note, signal) : repairAnnotation(editing.id, slug, selector!, signal)) : createAnnotation(slug, selector!, note, signal));
+    const r = await run((signal) => editing ? (editing.status === "resolved" ? updateAnnotation(editing.id, note, signal) : repairAnnotation(editing.id, slug, selector! as never, signal)) : createAnnotation(slug, selector! as never, note, signal));
     if (r.ok) { setSelector(null); setEditing(null); setNote(""); setError(""); onChanged(); refresh(); }
     else if (r.status === 401) expire(); else setError(r.message);
   };

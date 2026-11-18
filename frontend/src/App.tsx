@@ -8,6 +8,7 @@ export { compact, full } from "./time";
 import CanvasPage, { type CanvasSnapshot } from "./CanvasPage";
 import ForumPage from "./ForumPage";
 import ForumThreadPage from "./ForumThreadPage";
+import { useRequest } from "./useRequest";
 
 type Summary = { slug: string; title: string; excerpt: string | null; tags: string[]; draft: boolean };
 type Post = Summary & { html: string };
@@ -477,7 +478,7 @@ function useAdmin(): [AdminKit | null, () => void] {
     const c = new AbortController();
     import("./adminApi")
       .then((api) => api.checkSession(c.signal))
-      .then((r) => (r.ok && r.data.authenticated ? Promise.all([import("./TimelineComposer"), import("./EntryEditor"), import("./AnnotationAdmin")]) : undefined))
+      .then((r) => (r.ok && r.data.authenticated ? Promise.all([import("./TimelineComposer"), import("./EntryEditor"), import("./PostAnnotationAdmin")]) : undefined))
       .then((m) => !c.signal.aborted && m && setKit({ Composer: m[0].default, EntryRow: m[1].EntryRow, PostAnnotationAdmin: m[2].PostAnnotationAdmin, send: m[1].sendOrExpire(expire) }))
       .catch(() => {});
     return () => c.abort();
@@ -569,6 +570,7 @@ function PostPage({ slug }: { slug: string }) {
   const body = useRef<HTMLDivElement>(null);
   const [root, setRoot] = useState<HTMLDivElement | null>(null);
   const [admin, expire] = useAdmin();
+  const { run: refreshPost } = useRequest("load");
   useEffect(() => {
     if (!data) return;
     const diagrams = body.current?.querySelectorAll<HTMLElement>("pre.mermaid");
@@ -622,7 +624,7 @@ function PostPage({ slug }: { slug: string }) {
       </div>
       {/* Posts are Henry's own files, rendered server side. */}
       <div ref={(el) => { body.current = el; setRoot(el); }} dangerouslySetInnerHTML={{ __html: data.html }} />
-      {admin && root && <admin.PostAnnotationAdmin root={root} slug={slug} expire={expire} onChanged={() => reload()} />}
+      {admin && root && <admin.PostAnnotationAdmin root={root} slug={slug} expire={expire} onChanged={() => { void refreshPost((signal) => reload(signal).then((data) => ({ ok: true as const, data })).catch(() => ({ ok: false as const, status: 0, message: "" }))); }} />}
     </article>
   );
 }

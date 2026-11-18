@@ -32,7 +32,7 @@ from pygments.util import ClassNotFound
 from anchors import add_heading_anchors
 from agent_commons import AgentCommonsStore, AgentPrincipal, DuplicateRegistration, InvalidProof as AgentInvalidProof, Throttled as AgentThrottled, public_agent, AGENT_SCOPES, CHALLENGE_SECONDS as AGENT_CHALLENGE_SECONDS, TOKEN_SECONDS as AGENT_TOKEN_SECONDS, WritesPaused
 from canvas import CanvasStore, authorize_canvas_write, png_bytes, snapshot_payload
-from annotations import Annotation, AnnotationStore, AnnotationStoreProtocol, Resolution, Selector, render_with_annotations, resolve, validate_selector
+from annotations import Annotation, AnnotationStore, AnnotationStoreProtocol, Resolution, Selector, render_with_annotations, resolve, selector_from_dom, validate_selector
 from forum import ForumStore
 from moderation import ModerationStore
 from operations import check_readiness, configure_logging, load_schema_heads
@@ -1554,18 +1554,18 @@ def _get_post_data(slug: str) -> dict | PostRedirect | None:
     return {**post, "html": rendered}
 
 
-class AnnotationSelectorRequest(BaseModel):
+class AnnotationAnchorRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    block_text: str
+    start: int
+    end: int
     block_kind: str
-    block_index: int
-    exact: str
-    prefix: str = ""
-    suffix: str = ""
+    block_index_hint: int
 
 class AnnotationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     post_slug: str
-    selector: AnnotationSelectorRequest
+    anchor: AnnotationAnchorRequest
     note_text: str
 
 class AnnotationNoteRequest(BaseModel):
@@ -1575,7 +1575,7 @@ class AnnotationNoteRequest(BaseModel):
 class AnnotationRepairRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     post_slug: str
-    selector: AnnotationSelectorRequest
+    anchor: AnnotationAnchorRequest
 
 
 def _annotation_storage() -> AnnotationStoreProtocol:
@@ -1584,13 +1584,11 @@ def _annotation_storage() -> AnnotationStoreProtocol:
     return annotation_store
 
 
-def _selector(payload: AnnotationSelectorRequest) -> Selector:
-    selector = Selector(payload.block_kind, payload.block_index, payload.exact, payload.prefix, payload.suffix)
+def _selector(body: str, payload: AnnotationAnchorRequest) -> Selector:
     try:
-        validate_selector(selector)
+        return selector_from_dom(body, payload.block_text, payload.start, payload.end, payload.block_kind, payload.block_index_hint)
     except ValueError as exc:
-        raise HTTPException(422, "invalid request") from exc
-    return selector
+        raise _annotation_error(exc) from exc
 
 
 def _file_post(slug: str) -> dict:
@@ -1637,7 +1635,7 @@ def list_admin_annotations(slug: str | None = None, _access: Access = Depends(re
 async def create_admin_annotation(request: Request, _access: Access = Depends(require_browser_mutation)):
     payload = await _bounded_json(request, AnnotationCreateRequest)
     post = await asyncio.to_thread(_file_post, payload.post_slug)
-    selector = _selector(payload.selector)
+    selector = _selector(post["body"], payload.anchor)
     try: row = await asyncio.to_thread(_annotation_storage().create, payload.post_slug, selector, payload.note_text, post["body"])
     except ValueError as exc: raise _annotation_error(exc) from exc
     except HTTPException: raise
@@ -1665,7 +1663,7 @@ async def update_admin_annotation(annotation_id: PositiveInt, request: Request, 
 async def repair_admin_annotation(annotation_id: PositiveInt, request: Request, _access: Access = Depends(require_browser_mutation)):
     payload = await _bounded_json(request, AnnotationRepairRequest)
     post = await asyncio.to_thread(_file_post, payload.post_slug)
-    selector = _selector(payload.selector)
+    selector = _selector(post["body"], payload.anchor)
     try: row = await asyncio.to_thread(_annotation_storage().repair, annotation_id, payload.post_slug, selector, post["body"])
     except ValueError as exc: raise _annotation_error(exc) from exc
     except Exception as exc:
