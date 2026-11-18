@@ -1,12 +1,15 @@
 import concurrent.futures
 import os
+import threading
+
+import html5lib
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
 
 import app
-from annotations import Annotation, AnnotationStore, Selector, _blocks, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
+from annotations import Annotation, AnnotationStore, Selector, _blocks, _markdown, post_annotations, render_with_annotations, resolve, validate_note, validate_selector
 
 
 def row(number, exact, *, kind="paragraph", index=0, prefix="", suffix=""):
@@ -18,10 +21,49 @@ def test_resolves_rendered_text_across_emphasis_and_links():
     assert rendered.resolutions[0].status == "resolved"
 
 
-def test_resolves_lists_blockquotes_tables_and_headings():
+def test_resolves_lists_blockquotes_and_headings_but_not_table_cells():
     body = "# heading\n\n- first\n- second\n\n> quoted\n\n| left | right |\n| --- | --- |\n| cell | value |"
     rows = [row(1, "heading", kind="heading"), row(2, "second", kind="list_item", index=2), row(3, "quoted", kind="blockquote_paragraph", index=3), row(4, "cell", kind="table_cell", index=4)]
-    assert [r.status for r in resolve(body, rows)] == ["resolved"] * 4
+    assert [r.status for r in resolve(body, rows)] == ["resolved", "resolved", "resolved", "orphaned"]
+
+
+@pytest.mark.parametrize("body", ["before `code`", "before ![image](x)", "before $x$"])
+def test_marker_follows_selection_before_inline_children(body):
+    rendered = render_with_annotations(body, [row(1, "before")]).html
+    assert 'aria-label="note 1"' in rendered
+    assert 'id="note-1-narrow"' in rendered
+
+
+def test_link_annotations_are_valid_and_marker_is_after_link():
+    for body, exact in [("[inside](https://example.test)", "inside"), ("before [inside](https://example.test) after", "before inside after"), ("before [inside](https://example.test) after", "inside"), ("[around inside text](https://example.test)", "around inside")]:
+        rendered = render_with_annotations(body, [row(1, exact)]).html
+        parser = html5lib.HTMLParser(strict=False)
+        parser.parseFragment(rendered)
+        assert parser.errors == []
+        assert rendered.index("</a>") < rendered.index('aria-label="note 1"')
+
+
+def test_annotated_rendering_is_thread_local():
+    body = "one **bold** two"
+    rows = [row(1, "bold")]
+    parser = _markdown()
+    original_rules = dict(parser.renderer.rules)
+    barrier = threading.Barrier(2)
+    def overlapping_close(tokens, index, options, env):
+        barrier.wait(timeout=5)
+        # The request-local copy must leave the shared parser rule untouched.
+        assert parser.renderer.rules["paragraph_close"] is overlapping_close
+        return parser.renderer.renderToken(tokens, index, options, env)
+
+    parser.renderer.rules["paragraph_close"] = overlapping_close
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            outputs = list(pool.map(lambda _: render_with_annotations(body, rows, parser).html, range(2)))
+    finally:
+        parser.renderer.rules = original_rules
+    assert parser.renderer.rules == original_rules
+    assert len(set(outputs)) == 1
+    assert all('aria-label="note 1"' in output for output in outputs)
 
 
 def test_changed_and_ambiguous_quotes_are_orphaned():
@@ -166,10 +208,78 @@ def test_validation_rejects_bad_selector_and_note():
         validate_note("\x00")
 
 
-def test_note_is_not_rendered_in_pr1():
+def test_resolved_note_is_rendered_for_readers():
     result = render_with_annotations("text", [row(1, "text")])
-    assert "a note" not in result.html
-    assert "<mark" not in result.html
+    assert 'class="sidenote"' in result.html
+    assert "a note" in result.html
+
+
+def test_annotation_after_table_marks_exact_text_and_keeps_details_out_of_table():
+    body = "| left | right |\n| --- | --- |\n| cell | value |\n\nmarked paragraph"
+    result = render_with_annotations(body, [row(1, "marked paragraph")])
+    parser = html5lib.HTMLParser(strict=False)
+    parser.parseFragment(result.html)
+    assert parser.errors == []
+    assert result.html.count("<mark>marked paragraph</mark>") == 1
+    assert result.html.count('<span class="sidenote"') == 1
+    assert result.html.count('<details class="ann-note"') == 1
+    assert result.html.index("</table>") < result.html.index('<details class="ann-note"')
+
+
+@pytest.mark.parametrize("body", [
+    "<div>not annotatable</div>\n\nmarked paragraph",
+    "```python\ncode\n```\n\nmarked paragraph",
+    "- list item\n\nmarked paragraph",
+    "# heading\n\nmarked paragraph",
+    "> quoted\n\nmarked paragraph",
+    "| left | right |\n| --- | --- |\n| cell | value |\n\nmarked paragraph",
+])
+def test_annotation_marks_exact_text_after_mixed_block_kinds(body):
+    import re
+    import html as html_module
+
+    result = render_with_annotations(body, [row(1, "marked paragraph")])
+    parser = html5lib.HTMLParser(strict=False)
+    parser.parseFragment(result.html)
+    assert parser.errors == []
+    marked = [html_module.unescape(value) for value in re.findall(r"<mark>(.*?)</mark>", result.html)]
+    assert marked == ["marked paragraph"]
+    assert result.html.count('<span class="sidenote"') == 1
+    assert result.html.count('<details class="ann-note"') == 1
+
+
+def test_annotation_after_leading_code_marks_exact_selector():
+    result = render_with_annotations("`neenerweener` dumb spam account name", [row(1, "dumb spam account name")])
+    assert result.resolutions[0].status == "resolved"
+    assert '<mark>dumb spam account name</mark>' in result.html
+    assert result.html.index('class="ann-ref-wide"') > result.html.index('name</mark>')
+
+
+@pytest.mark.parametrize("body", [
+    "`code` tail",
+    "head `code` tail",
+    "head `code`",
+    "*emphasis* tail",
+    "head [linked text](https://example.test) tail",
+    "one &amp; two tail",
+    "one\ntwo tail",
+    "one ![image](x) tail",
+    "one $x$ tail",
+])
+def test_rendered_mark_fragments_match_every_canonical_segment(body):
+    import html as html_module
+    import re
+
+    _, blocks = _blocks(body)
+    assert len(blocks) == 1
+    for segment, _ in blocks[0].segments:
+        selections = {segment[left:right] for left in range(len(segment)) for right in range(left + 1, len(segment) + 1)}
+        for exact in selections:
+            result = render_with_annotations(body, [row(1, exact)])
+            if result.resolutions[0].status != "resolved":
+                continue
+            marked = "".join(html_module.unescape(value) for value in re.findall(r"<mark>(.*?)</mark>", result.html))
+            assert marked == exact
 
 
 @pytest.fixture
@@ -398,3 +508,23 @@ def test_real_fixture_edit_preserves_and_orphans_annotations():
     after = resolve("keep\n\nchanged", before)
     assert after[0].status == "resolved"
     assert after[1].reason == "not-found"
+
+
+def test_fallback_details_cover_heading_and_table_cell():
+    body = "# heading\n\n| cell |\n| --- |\n| value |"
+    rows = [row(1, "heading", kind="heading"), row(2, "value", kind="table_cell", index=2)]
+    rendered = render_with_annotations(body, rows).html
+    assert rendered.count('class="ann-note"') == 1
+    assert "</h1>\n<details" in rendered
+
+
+def test_document_order_controls_note_numbers_and_long_notes_stay_visible():
+    rows = [row(9, "upper", index=1), Annotation(2, "sample", Selector("paragraph", 0, "lower"), "x" * 401)]
+    rendered = render_with_annotations("lower\n\nupper", rows).html
+    assert rendered.index('aria-label="note 1"') < rendered.index('aria-label="note 2"')
+    assert "class=\"ann-note ann-note-long\"" in rendered
+
+
+def test_note_newlines_are_preserved_in_both_copies():
+    rendered = render_with_annotations("text", [Annotation(1, "sample", Selector("paragraph", 0, "text"), "one  two\nthree")]).html
+    assert "one  two\nthree" in rendered
