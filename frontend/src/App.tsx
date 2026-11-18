@@ -8,6 +8,7 @@ export { compact, full } from "./time";
 import CanvasPage, { type CanvasSnapshot } from "./CanvasPage";
 import ForumPage from "./ForumPage";
 import ForumThreadPage from "./ForumThreadPage";
+import { useRequest } from "./useRequest";
 
 type Summary = { slug: string; title: string; excerpt: string | null; tags: string[]; draft: boolean };
 type Post = Summary & { html: string };
@@ -462,7 +463,7 @@ export function EntryMedia({ media }: { media: Media[] }) {
 
 type ComposerProps = { profile: Profile; onCreated: (entry: Entry) => void; onExpired: () => void };
 // The admin parts of /timeline, all from lazy chunks: the composer, the per-entry controls, and their request.
-type AdminKit = { Composer: ComponentType<ComposerProps>; EntryRow: typeof EntryRow; send: Send };
+type AdminKit = { Composer: ComponentType<ComposerProps>; EntryRow: typeof EntryRow; PostAnnotationAdmin: ComponentType<{ root: HTMLElement; slug: string; onChanged: () => Promise<unknown>; expire: () => void }>; send: Send };
 
 // The admin's composer and entry controls, or null. The server sends the same page to everyone; a non-secret
 // hint cookie (set at login) says whether to check the session, so visitors pay no request. Only a signed-in
@@ -477,8 +478,8 @@ function useAdmin(): [AdminKit | null, () => void] {
     const c = new AbortController();
     import("./adminApi")
       .then((api) => api.checkSession(c.signal))
-      .then((r) => (r.ok && r.data.authenticated ? Promise.all([import("./TimelineComposer"), import("./EntryEditor")]) : undefined))
-      .then((m) => !c.signal.aborted && m && setKit({ Composer: m[0].default, EntryRow: m[1].EntryRow, send: m[1].sendOrExpire(expire) }))
+      .then((r) => (r.ok && r.data.authenticated ? Promise.all([import("./TimelineComposer"), import("./EntryEditor"), import("./PostAnnotationAdmin")]) : undefined))
+      .then((m) => !c.signal.aborted && m && setKit({ Composer: m[0].default, EntryRow: m[1].EntryRow, PostAnnotationAdmin: m[2].PostAnnotationAdmin, send: m[1].sendOrExpire(expire) }))
       .catch(() => {});
     return () => c.abort();
   }, []);
@@ -508,7 +509,8 @@ function useApi<T>(url: string) {
       );
     return () => c.abort();
   }, [url]);
-  return { data, error };
+  const reload = (signal?: AbortSignal) => fetchWithSignal(url, signal, { cache: "no-store" }).then((r) => (r.ok ? r.json() : Promise.reject())).then((d) => { setData(d); setError(false); return d; });
+  return { data, error, reload };
 }
 
 function Tags({ tags }: { tags: string[] }) {
@@ -564,8 +566,11 @@ function PostList() {
 }
 
 function PostPage({ slug }: { slug: string }) {
-  const { data, error } = useApi<Post>(`/api/posts/${slug}`);
+  const { data, error, reload } = useApi<Post>(`/api/posts/${slug}`);
   const body = useRef<HTMLDivElement>(null);
+  const [root, setRoot] = useState<HTMLDivElement | null>(null);
+  const [admin, expire] = useAdmin();
+  const { run: refreshPost } = useRequest("load");
   useEffect(() => {
     if (!data) return;
     const diagrams = body.current?.querySelectorAll<HTMLElement>("pre.mermaid");
@@ -618,7 +623,8 @@ function PostPage({ slug }: { slug: string }) {
         <Tags tags={data.tags} />
       </div>
       {/* Posts are Henry's own files, rendered server side. */}
-      <div ref={body} dangerouslySetInnerHTML={{ __html: data.html }} />
+      <div ref={(el) => { body.current = el; setRoot(el); }} dangerouslySetInnerHTML={{ __html: data.html }} />
+      {admin && root && <admin.PostAnnotationAdmin root={root} slug={slug} expire={expire} onChanged={() => refreshPost((signal) => reload(signal))} />}
     </article>
   );
 }

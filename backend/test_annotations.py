@@ -338,8 +338,8 @@ def test_postgres_repair_put_same_and_changed_slug(annotation_db, monkeypatch):
     app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
     try:
         with TestClient(app.app) as client:
-            same = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
-            moved = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"other", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
+            same = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"sample", "anchor":{"block_text":"text", "start":0, "end":4, "block_kind":"paragraph", "block_index_hint":0}})
+            moved = client.put(f"/api/admin/annotations/{created.id}/anchor", json={"post_slug":"other", "anchor":{"block_text":"text", "start":0, "end":4, "block_kind":"paragraph", "block_index_hint":0}})
         assert same.status_code == 200
         assert moved.status_code == 200
         assert moved.json()["post_slug"] == "other"
@@ -429,7 +429,7 @@ def test_annotation_api_has_stable_domain_errors(monkeypatch, error, detail):
     app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
     try:
         with TestClient(app.app) as client:
-            response = client.post("/api/admin/annotations", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}, "note_text":"note"})
+            response = client.post("/api/admin/annotations", json={"post_slug":"sample", "anchor":{"block_text":"text", "start":0, "end":4, "block_kind":"paragraph", "block_index_hint":0}, "note_text":"note"})
         assert response.status_code == 422
         assert response.json()["detail"] == detail
     finally:
@@ -462,7 +462,7 @@ def test_annotation_api_note_is_stored_exactly_as_sent(annotation_api):
     app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
     try:
         with TestClient(app.app) as client:
-            response = client.post("/api/admin/annotations", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}, "note_text":"  exact  "})
+            response = client.post("/api/admin/annotations", json={"post_slug":"sample", "anchor":{"block_text":"text", "start":0, "end":4, "block_kind":"paragraph", "block_index_hint":0}, "note_text":"  exact  "})
         assert response.status_code == 201
         assert annotation_api.rows[0].note_text == "  exact  "
     finally:
@@ -496,7 +496,7 @@ def test_annotation_api_repair_preserves_note_and_moves_slug(monkeypatch):
     app.app.dependency_overrides[app.require_browser_mutation] = lambda: app.Access(None)
     try:
         with TestClient(app.app) as client:
-            response = client.put("/api/admin/annotations/1/anchor", json={"post_slug":"sample", "selector":{"block_kind":"paragraph", "block_index":0, "exact":"text"}})
+            response = client.put("/api/admin/annotations/1/anchor", json={"post_slug":"sample", "anchor":{"block_text":"text", "start":0, "end":4, "block_kind":"paragraph", "block_index_hint":0}})
         assert response.status_code == 200
         assert response.json()["note_text"] == "kept note"
     finally:

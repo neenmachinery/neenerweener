@@ -127,3 +127,16 @@ export const createTimeline = (body_markdown: string, attachments: Attachment[],
     { body_markdown, ...(attachments.length > 0 && { attachments }) },
     signal,
   );
+
+export type AnnotationSelector = { block_kind: string; block_index: number; exact: string; prefix?: string; suffix?: string };
+export type AnnotationAnchor = { block_text: string; start: number; end: number; block_kind: string; block_index_hint: number };
+export type Annotation = { id: number; post_slug: string; selector: AnnotationSelector; note_text: string; status: string; reason: string | null; created_at: string | null; updated_at: string | null };
+export const listAnnotations = (slug: string | undefined, signal: AbortSignal) =>
+  request<Annotation[]>("GET", `/api/admin/annotations${slug ? `?slug=${encodeURIComponent(slug)}` : ""}`, undefined, signal);
+export const createAnnotation = (post_slug: string, anchor: AnnotationAnchor, note_text: string, signal: AbortSignal) =>
+  request<Annotation>("POST", "/api/admin/annotations", { post_slug, anchor, note_text }, signal);
+export const updateAnnotation = (id: number, note_text: string, signal: AbortSignal) =>
+  request<Annotation>("PATCH", `/api/admin/annotations/${id}`, { note_text }, signal);
+export const repairAnnotation = (id: number, post_slug: string, anchor: AnnotationAnchor, signal: AbortSignal) =>
+  request<Annotation>("PUT", `/api/admin/annotations/${id}/anchor`, { post_slug, anchor }, signal);
+export const deleteAnnotation = (id: number, signal: AbortSignal) => request<void>("DELETE", `/api/admin/annotations/${id}`, undefined, signal);

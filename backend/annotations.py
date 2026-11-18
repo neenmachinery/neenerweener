@@ -223,6 +223,41 @@ def _blocks(body: str, *, heading_anchors: bool = False, parser: MarkdownIt | No
     return tokens, blocks
 
 
+def _raw_map(text: str) -> tuple[str, list[int]]:
+    """normalize DOM textContent and map every raw boundary to a canonical offset."""
+    out, boundaries = [], [0] * (len(text) + 1)
+    pending = False
+    for index, char in enumerate(text):
+        if char.isspace():
+            boundaries[index] = len(out); pending = bool(out)
+        else:
+            if pending and out: out.append(" ")
+            boundaries[index] = len(out)
+            out.append(char); pending = False
+        boundaries[index + 1] = len(out)
+    if out and out[-1] == " ":
+        out.pop()
+        boundaries = [min(value, len(out)) for value in boundaries]
+    return "".join(out), boundaries
+
+
+def selector_from_dom(body: str, block_text: str, start: int, end: int, block_kind: str, block_index_hint: int) -> Selector:
+    if not isinstance(block_text, str) or not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
+        raise ValueError("not-found")
+    _, blocks = _blocks(body)
+    raw, offsets = _raw_map(block_text)
+    candidates = [block for block in blocks if block.kind == block_kind and block.text == raw]
+    if not candidates:
+        raise ValueError("not-found")
+    block = next((item for item in candidates if item.index == block_index_hint), candidates[0])
+    if start >= len(offsets) or end >= len(offsets): raise ValueError("not-found")
+    left = offsets[start]
+    right = offsets[end]
+    if right > len(raw) or raw[left:right].strip() == "": raise ValueError("not-found")
+    exact = raw[left:right]
+    return Selector(block.kind, block.index, exact, block.text[max(0, left - MAX_CONTEXT):left], block.text[right:right + MAX_CONTEXT])
+
+
 def _candidates(blocks, selector):
     candidates = []
     for block in blocks:
@@ -292,7 +327,7 @@ def _annotation_markup(number: int, row: Annotation, text: str, last: bool, *, e
         return mark
     if defer_suffix:
         return mark
-    return f'<span class="ann" id="ann-{number}">{mark}{_annotation_suffix(number, row)}</span>'
+    return f'<span class="ann" id="ann-{number}" data-annotation-id="{row.id}">{mark}{_annotation_suffix(number, row)}</span>'
 
 
 def _token(type_: str, content: str):
@@ -347,9 +382,9 @@ def _source_map(block):
     return result
 
 
-def _close_inline_link(pieces, deferred, numbers, start):
+def _close_inline_link(pieces, deferred, numbers, rows, start):
     for index, suffix in deferred:
-        pieces.insert(start, _token("html_inline", f'<span class="ann" id="ann-{numbers[index]}">'))
+        pieces.insert(start, _token("html_inline", f'<span class="ann" id="ann-{numbers[index]}" data-annotation-id="{rows[index].id}">'))
         pieces.append(_token("html_inline", suffix + "</span>"))
     deferred.clear()
 
@@ -364,7 +399,7 @@ def _inline_plan(token, block, ranges, numbers, rows):
         elif child.type == "link_close":
             link_depth -= 1
             pieces.append(child)
-            _close_inline_link(pieces, deferred, numbers, link_starts.pop())
+            _close_inline_link(pieces, deferred, numbers, rows, link_starts.pop())
         elif child.type in {"softbreak", "hardbreak"}:
             active = _active_at(next(iter(by_source.get((id(child), -1), [])), None), ranges)
             if active is not None:
@@ -417,7 +452,7 @@ def _render_resolved(tokens, blocks, resolutions, rows, parser):
             number = numbers[annotation_index]
             row = row_by_index[annotation_index]
             mode = " ann-note-long" if len(row.note_text) > 400 else ""
-            result += f'<details class="ann-note{mode}" id="note-{number}-narrow"><summary>note {number}</summary><p>{_note_html(row.note_text)}</p></details>'
+            result += f'<details class="ann-note{mode}" id="note-{number}-narrow" data-annotation-id="{row.id}"><summary>note {number}</summary><p>{_note_html(row.note_text)}</p></details>'
         return result
 
     renderer.renderInline = render_inline
