@@ -6,7 +6,7 @@ import { useRequest } from "./useRequest";
 
 const eligible = "h1,h2,h3,h4,h5,h6,p,li,blockquote p";
 const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
-function selectedSelector(root: HTMLElement): AnnotationSelector | null {
+export function selectedSelector(root: HTMLElement): AnnotationSelector | null {
   const selection = getSelection();
   if (!selection || selection.isCollapsed || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return null;
   const range = selection.getRangeAt(0);
@@ -29,11 +29,16 @@ export function PostAnnotationAdmin({ root, slug, onChanged, expire }: { root: H
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<Annotation | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const repairId = Number(new URLSearchParams(location.search).get("repair"));
   const { run, busy } = useRequest("submit");
   const { run: loadRun } = useRequest("load");
   const refresh = async () => {
     const r = await loadRun((signal) => listAnnotations(slug, signal));
-    if (r.ok) setAnnotations(r.data); else if (r.status === 401) expire();
+    if (r.ok) {
+      setAnnotations(r.data);
+      const repair = r.data.find((a) => a.id === repairId);
+      if (repair && repair.status !== "resolved") { setEditing(repair); setNote(repair.note_text); }
+    } else if (r.status === 401) expire();
   };
   useEffect(() => { refresh(); }, [slug]);
   useEffect(() => {
@@ -43,13 +48,13 @@ export function PostAnnotationAdmin({ root, slug, onChanged, expire }: { root: H
   }, [root]);
   const save = async () => {
     if (!selector || !note.trim()) return;
-    const r = await run((signal) => editing ? updateAnnotation(editing.id, note, signal) : createAnnotation(slug, selector, note, signal));
+    const r = await run((signal) => editing ? (editing.status === "resolved" ? updateAnnotation(editing.id, note, signal) : repairAnnotation(editing.id, slug, selector!, signal)) : createAnnotation(slug, selector!, note, signal));
     if (r.ok) { setSelector(null); setEditing(null); setNote(""); setError(""); onChanged(); refresh(); }
     else if (r.status === 401) expire(); else setError(r.message);
   };
   const edit = (a: Annotation) => { setEditing(a); setNote(a.note_text); setSelector(a.selector); };
   return <>
-    {selector && <div className="annotation-editor" role="dialog" aria-label="annotate"><textarea autoFocus value={note} onChange={(e) => setNote(e.target.value)} aria-label="note" /><div><Button onClick={save} busy={busy} label="save" /><Button onClick={() => { setSelector(null); setEditing(null); setError(""); }} label="cancel" /></div>{error && <p className="error" role="alert">{error}</p>}</div>}
+    {(selector || editing?.status !== "resolved") && <div className="annotation-editor" role="dialog" aria-label="annotate"><textarea autoFocus readOnly={editing?.status !== "resolved"} value={note} onChange={(e) => setNote(e.target.value)} aria-label="note" /><div><Button onClick={save} busy={busy} label="save" /><Button onClick={() => { setSelector(null); setEditing(null); setError(""); }} label="cancel" /></div>{error && <p className="error" role="alert">{error}</p>}</div>}
     {annotations.map((a) => <AnnotationControls key={a.id} annotation={a} onEdit={() => edit(a)} onDeleted={() => { refresh(); onChanged(); }} expire={expire} />)}
   </>;
 }
@@ -72,5 +77,5 @@ function AdminAnnotationRow({ annotation, onChanged }: { annotation: Annotation;
   const [editing, setEditing] = useState(false); const [text, setText] = useState(annotation.note_text); const [confirm, setConfirm] = useState(false); const [error, setError] = useState(""); const { run, busy } = useRequest("submit");
   const save = async () => { const r = await run((s) => updateAnnotation(annotation.id, text, s)); if (r.ok) { setEditing(false); onChanged(); } else setError(r.message); };
   const remove = async () => { const r = await run((s) => deleteAnnotation(annotation.id, s)); if (r.ok) onChanged(); else setError(r.message); };
-  return <li>{editing ? <><textarea aria-label="note" value={text} onChange={(e) => setText(e.target.value)} /><Button onClick={save} busy={busy} label="save" /><Button onClick={() => setEditing(false)} label="cancel" /></> : <><span className="label">{annotation.note_text}</span><button type="button" onClick={() => setEditing(true)}>edit</button></>}{error && <span className="error">{error}</span>}<span className="muted">{annotation.status}{annotation.reason ? ` · ${annotation.reason}` : ""}</span>{confirm ? <><Button onClick={remove} busy={busy} label="confirm delete" /><Button onClick={() => setConfirm(false)} label="cancel" /></> : <Button onClick={() => setConfirm(true)} label="delete" />}{annotation.status !== "resolved" && <a href={`/posts/${annotation.post_slug}#annotate-${annotation.id}`}>repair</a>}</li>;
+  return <li>{editing ? <><textarea aria-label="note" value={text} onChange={(e) => setText(e.target.value)} /><Button onClick={save} busy={busy} label="save" /><Button onClick={() => setEditing(false)} label="cancel" /></> : <><span className="label">{annotation.note_text}</span><button type="button" onClick={() => setEditing(true)}>edit</button></>}{error && <span className="error">{error}</span>}<span className="muted">{annotation.status}{annotation.reason ? ` · ${annotation.reason}` : ""}</span>{confirm ? <><Button onClick={remove} busy={busy} label="confirm delete" /><Button onClick={() => setConfirm(false)} label="cancel" /></> : <Button onClick={() => setConfirm(true)} label="delete" />}{annotation.status !== "resolved" && <a href={`/posts/${annotation.post_slug}?repair=${annotation.id}`}>repair</a>}</li>;
 }
