@@ -1541,8 +1541,17 @@ def _get_post_data(slug: str) -> dict | PostRedirect | None:
     if not isinstance(post, dict):
         return post
     body = post.pop("body")
-    post.pop("_annotation_source", None)
-    return {**post, "html": render_post(body)}
+    is_file_post = bool(post.pop("_annotation_source", False))
+    rendered = render_post(body)
+    if is_file_post and annotation_store is not None:
+        try:
+            rows = annotation_store.list_for_post(slug)
+            if any(result.status == "resolved" for result in resolve(body, rows)):
+                rendered = caption_figures(render_with_annotations(body, rows, md).html)
+        except Exception as exc:
+            logger.warning("annotation storage unavailable: %s", type(exc).__name__)
+            raise HTTPException(503, "posts unavailable") from exc
+    return {**post, "html": rendered}
 
 
 class AnnotationSelectorRequest(BaseModel):

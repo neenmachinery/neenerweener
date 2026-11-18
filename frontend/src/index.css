@@ -2055,3 +2055,37 @@ article :is(h2, h3, h4, h5, h6) .anchor:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .forum-item.is-new { transition: none; }
 }
+
+/* public post annotations: a css-only sidenote rail with a native narrow fallback */
+.ann mark { background: none; color: inherit; text-decoration: underline 2px var(--line-strong); text-underline-offset: .25em; }
+.ann:is(:hover, :focus-within, :has(:target)) mark,
+.ann:is(:hover, :focus-within, :has(:target)) .sidenote { background: var(--tint-current); color: var(--fg); border-radius: 2px; text-decoration-color: var(--accent); }
+.ann-ref-wide { color: var(--muted); }
+.ann-ref-wide a { color: inherit; text-decoration: none; font-variant-numeric: tabular-nums; padding: 0 .15em; }
+.ann-ref-narrow { display: none; }
+.ann:is(:hover, :focus-within, :has(:target)) .ann-ref-wide { color: var(--accent); font-weight: 600; }
+.ann sup { font-size: .75em; line-height: 0; }
+.sidenote { display: none; white-space: pre-wrap; }
+.ann-note { margin: .5rem 0; padding: .667rem .8rem; border-radius: 6px; background: var(--tint-current); color: var(--muted); font-size: .9em; line-height: 1.55; white-space: pre-wrap; }
+.ann-note p { white-space: pre-wrap; }
+.ann-note summary { color: var(--muted); cursor: pointer; }
+.ann-note summary::marker { color: var(--faint); }
+@media (min-width: 1040px) {
+  main:has(.sidenote) { max-width: 68.5rem; }
+  main:has(.sidenote) article { padding-right: 16.5rem; display: flow-root; }
+  .sidenote { display: block; float: right; clear: right; width: 14rem; margin: 0 -16.5rem .8rem 0; padding-top: .15rem; font-size: .8667rem; line-height: 1.5; color: var(--muted); }
+  .sidenote { display: grid; grid-template-columns: 1ch minmax(0, 1fr); column-gap: .4rem; }
+  .sidenote .n { color: var(--faint); }
+  .sidenote-text { min-width: 0; }
+  .ann-note { display: none; }
+  .ann-note.ann-note-long { display: block; }
+  main:has(.sidenote) .back { right: auto; left: -2rem; width: 1.5rem; margin-right: 0; text-align: center; z-index: 1; }
+}
+@media (min-width: 1040px) and (max-width: 1060px) {
+  main:has(.sidenote) { padding-left: 2rem; padding-right: .5rem; }
+}
+@media (max-width: 1039px) {
+  .ann-ref-wide { display: none; }
+  .ann-ref-narrow { display: inline; }
+  .sidenote { display: none; }
+}
