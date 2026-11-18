@@ -463,7 +463,7 @@ export function EntryMedia({ media }: { media: Media[] }) {
 
 type ComposerProps = { profile: Profile; onCreated: (entry: Entry) => void; onExpired: () => void };
 // The admin parts of /timeline, all from lazy chunks: the composer, the per-entry controls, and their request.
-type AdminKit = { Composer: ComponentType<ComposerProps>; EntryRow: typeof EntryRow; PostAnnotationAdmin: ComponentType<{ root: HTMLElement; slug: string; onChanged: () => void; expire: () => void }>; send: Send };
+type AdminKit = { Composer: ComponentType<ComposerProps>; EntryRow: typeof EntryRow; PostAnnotationAdmin: ComponentType<{ root: HTMLElement; slug: string; onChanged: () => Promise<unknown>; expire: () => void }>; send: Send };
 
 // The admin's composer and entry controls, or null. The server sends the same page to everyone; a non-secret
 // hint cookie (set at login) says whether to check the session, so visitors pay no request. Only a signed-in
@@ -624,7 +624,7 @@ function PostPage({ slug }: { slug: string }) {
       </div>
       {/* Posts are Henry's own files, rendered server side. */}
       <div ref={(el) => { body.current = el; setRoot(el); }} dangerouslySetInnerHTML={{ __html: data.html }} />
-      {admin && root && <admin.PostAnnotationAdmin root={root} slug={slug} expire={expire} onChanged={() => { void refreshPost((signal) => reload(signal).then((data) => ({ ok: true as const, data })).catch(() => ({ ok: false as const, status: 0, message: "" }))); }} />}
+      {admin && root && <admin.PostAnnotationAdmin root={root} slug={slug} expire={expire} onChanged={() => refreshPost((signal) => reload(signal))} />}
     </article>
   );
 }
